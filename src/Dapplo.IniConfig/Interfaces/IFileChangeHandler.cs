@@ -5,7 +5,7 @@ namespace Dapplo.IniConfig.Interfaces;
 
 /// <summary>
 /// The decision returned by a <see cref="FileChangedCallback"/> registered via
-/// <see cref="Configuration.IniConfigBuilder.OnFileChanged"/>.
+/// <see cref="Configuration.IniConfigBuilder.MonitorFile"/>.
 /// </summary>
 public enum ReloadDecision
 {
