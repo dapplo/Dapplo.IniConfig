@@ -4,11 +4,15 @@ A powerful, source-generator–backed INI file configuration framework for .NET.
 
 - ✅ Define configuration sections as **annotated interfaces**
 - ✅ Concrete classes are **auto-generated** — no boilerplate
-- ✅ **Layered** loading: defaults → user file → admin constants
+- ✅ **Layered** loading: defaults → user file → admin constants → external sources
+- ✅ **In-place reload** with singleton guarantee (safe for DI)
+- ✅ **File locking** to prevent external modification
+- ✅ **File-change monitoring** with optional consumer hook
+- ✅ **INotifyDataErrorInfo** validation for WPF / Avalonia / WinForms binding
 - ✅ **Transactional** updates with rollback support
 - ✅ **INotifyPropertyChanged** / **INotifyPropertyChanging** baked in
 - ✅ **Lifecycle hooks** implementable directly in the section interface via static virtuals (C# 11+)
-- ✅ Extensible **value converter** system
+- ✅ Extensible **value converter** system (custom converters for encryption etc.)
 
 ---
 
@@ -16,15 +20,23 @@ A powerful, source-generator–backed INI file configuration framework for .NET.
 
 1. [Quick start](#quick-start)
 2. [Defining section interfaces](#defining-section-interfaces)
-3. [Loading configuration](#loading-configuration)
-4. [Saving configuration](#saving-configuration)
-5. [Lifecycle hooks](#lifecycle-hooks)
-   - [New: generic static-virtual pattern (recommended)](#new-generic-static-virtual-pattern-recommended)
-   - [Legacy: partial-class pattern](#legacy-partial-class-pattern)
-6. [Transactional updates](#transactional-updates)
-7. [Property-change notifications](#property-change-notifications)
-8. [Value converters](#value-converters)
-9. [Registry API reference](#registry-api-reference)
+3. [Complete loading life-cycle](#complete-loading-life-cycle)
+4. [Loading configuration](#loading-configuration)
+5. [Reloading configuration](#reloading-configuration)
+6. [Saving configuration](#saving-configuration)
+7. [File locking](#file-locking)
+8. [File-change monitoring](#file-change-monitoring)
+9. [External value sources](#external-value-sources)
+10. [Validation (INotifyDataErrorInfo)](#validation-inotifydataerrorinfo)
+11. [Lifecycle hooks](#lifecycle-hooks)
+    - [New: generic static-virtual pattern (recommended)](#new-generic-static-virtual-pattern-recommended)
+    - [Legacy: partial-class pattern (.NET Framework / instance methods)](#legacy-partial-class-pattern-net-framework--instance-methods)
+12. [Singleton guarantee and dependency injection](#singleton-guarantee-and-dependency-injection)
+13. [Transactional updates](#transactional-updates)
+14. [Property-change notifications](#property-change-notifications)
+15. [Value converters](#value-converters)
+    - [Encrypting sensitive values](#encrypting-sensitive-values)
+16. [Registry API reference](#registry-api-reference)
 
 ---
 
@@ -49,7 +61,7 @@ var config = IniConfigRegistry
     .RegisterSection<IAppSettings>(new AppSettingsImpl())  // generated class
     .Build();
 
-// 3. Read values
+// 3. Read values — the section object is a stable singleton
 var settings = config.GetSection<IAppSettings>();
 Console.WriteLine($"{settings.AppName} is listening on port {settings.Port}");
 
@@ -70,6 +82,23 @@ config.Save();
 Every configuration section is a plain C# interface annotated with `[IniSection]`.
 The source generator (`Dapplo.IniConfig.Generator`) creates a concrete `partial class`
 implementation automatically.
+
+### Generated class naming convention
+
+The generator derives the concrete class name from the interface name:
+
+| Interface name | Generated class name | Generated file |
+|---------------|---------------------|----------------|
+| `IAppSettings` | `AppSettingsImpl` | `AppSettingsImpl.g.cs` |
+| `IDbConfig` | `DbConfigImpl` | `DbConfigImpl.g.cs` |
+| `IUserProfile` | `UserProfileImpl` | `UserProfileImpl.g.cs` |
+| `ServerConfig` *(no leading I)* | `ServerConfigImpl` | `ServerConfigImpl.g.cs` |
+
+The rule is: strip a leading `I` (if present) and append `Impl`.
+The file is generated into your project's intermediate output folder and compiled automatically.
+
+Because the generated class is declared `partial`, you can extend it with your own
+code in a separate file — see [Legacy: partial-class pattern](#legacy-partial-class-pattern-net-framework--instance-methods) below.
 
 ### `[IniSection]` attribute
 
@@ -118,12 +147,73 @@ public interface IDbSettings : IIniSection
 
 ---
 
+## Complete loading life-cycle
+
+Understanding the exact order in which values are resolved helps you predict the final
+state of any property after `Build()` or `Reload()`.
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│ STEP 1 — Reset to compiled defaults                                 │
+│   Each section's properties are set to their [IniValue(DefaultValue │
+│   = …)] values (or the type default when DefaultValue is absent).   │
+└──────────────────────────────┬──────────────────────────────────────┘
+                               │
+┌──────────────────────────────▼──────────────────────────────────────┐
+│ STEP 2 — Apply defaults files (AddDefaultsFile order)               │
+│   Each defaults file is read with IniFileParser and merged into the │
+│   sections. Later files win over earlier ones.                      │
+└──────────────────────────────┬──────────────────────────────────────┘
+                               │
+┌──────────────────────────────▼──────────────────────────────────────┐
+│ STEP 3 — Locate and apply the user INI file                         │
+│   Search directories (AddSearchPath order) are tried until the file │
+│   is found. Values in the user file override all defaults.          │
+│   If not found, the first writable search directory is stored for   │
+│   a future Save().                                                  │
+└──────────────────────────────┬──────────────────────────────────────┘
+                               │
+┌──────────────────────────────▼──────────────────────────────────────┐
+│ STEP 4 — Apply constants files (AddConstantsFile order)             │
+│   Admin-forced values that cannot be overridden by users.           │
+│   These win over everything above.                                  │
+└──────────────────────────────┬──────────────────────────────────────┘
+                               │
+┌──────────────────────────────▼──────────────────────────────────────┐
+│ STEP 5 — Apply external value sources (AddValueSource order)        │
+│   Each registered IValueSource is queried for every section/key.    │
+│   Sources are applied in registration order; the last one wins.     │
+└──────────────────────────────┬──────────────────────────────────────┘
+                               │
+┌──────────────────────────────▼──────────────────────────────────────┐
+│ STEP 6 — Fire IAfterLoad hooks                                      │
+│   OnAfterLoad() is called on every section that implements          │
+│   IAfterLoad / IAfterLoad<TSelf>. Use this for normalization,       │
+│   decryption, derived-value calculation, etc.                       │
+└──────────────────────────────┬──────────────────────────────────────┘
+                               │
+┌──────────────────────────────▼──────────────────────────────────────┐
+│ STEP 7 — (Build only) Acquire file lock / start file monitor        │
+│   If LockFile() or MonitorFile() was configured, the file lock is   │
+│   acquired and/or the FileSystemWatcher is started.                 │
+└──────────────────────────────┬──────────────────────────────────────┘
+                               │
+                          ✅ Ready
+```
+
+**Type conversion** happens at step 3 and 4 whenever `SetRawValue` is called.
+The raw string from the INI file is passed through the registered `IValueConverter<T>`
+for the property's type. Built-in converters cover all common .NET primitive types;
+custom converters can be registered with `ValueConverterRegistry.Register()`.
+
+---
+
 ## Loading configuration
 
 Use the fluent `IniConfigBuilder` API to configure a single INI file:
 
 ```csharp
-var config = IniConfigRegistry.ForFile("myapp.ini")
+using var config = IniConfigRegistry.ForFile("myapp.ini")
     // Search directories – tried in order until the file is found
     .AddSearchPath("/etc/myapp")
     .AddSearchPath(AppContext.BaseDirectory)
@@ -131,6 +221,10 @@ var config = IniConfigRegistry.ForFile("myapp.ini")
     .AddDefaultsFile("/etc/myapp/defaults.ini")
     // Optional: apply admin-forced constants last (users cannot override these)
     .AddConstantsFile("/etc/myapp/constants.ini")
+    // Optional: keep the file locked against external writes
+    .LockFile()
+    // Optional: automatically reload when the file changes on disk
+    .MonitorFile()
     // Register each section with its generated implementation
     .RegisterSection<IDbSettings>(new DbSettingsImpl())
     .RegisterSection<IAppSettings>(new AppSettingsImpl())
@@ -138,18 +232,26 @@ var config = IniConfigRegistry.ForFile("myapp.ini")
     .Build();
 ```
 
-### Loading order (layered configuration)
+> **Note:** `IniConfig` implements `IDisposable`. Use `using` to ensure the file lock
+> and file-system watcher are released when the application exits.
 
-```
-1. Seed each section with [IniValue(DefaultValue = …)] defaults
-2. Apply each AddDefaultsFile() in order
-3. Apply the resolved user INI file (first match in AddSearchPath directories)
-4. Apply each AddConstantsFile() in order  ← cannot be overridden
-5. Fire IAfterLoad hooks
-```
+---
 
-If the user file is not found, the path of the first writable search directory
-is used for a future `Save()` call.
+## Reloading configuration
+
+`IniConfig.Reload()` re-applies the full loading life-cycle (steps 1–6 above) **in place**,
+updating the property values of the already-registered section objects without creating new
+instances. This is the **singleton guarantee**: object references obtained from `GetSection<T>()`
+remain valid forever — including after a reload.
+
+```csharp
+// Explicitly trigger a reload at any time:
+config.Reload();
+
+// React to the reload completing:
+config.Reloaded += (sender, _) =>
+    Console.WriteLine($"{((IniConfig)sender!).FileName} was reloaded.");
+```
 
 ---
 
@@ -161,6 +263,162 @@ config.Save();
 
 // IBeforeSave hooks run first — returning false cancels the save.
 // IAfterSave hooks run after a successful write.
+```
+
+> **Note:** Own `Save()` calls are automatically detected and never trigger the file-change
+> monitor, so a save does not cause an unwanted reload loop.
+
+---
+
+## File locking
+
+Call `.LockFile()` on the builder to hold the INI file open with an exclusive write-lock
+for the entire application lifetime:
+
+```csharp
+using var config = IniConfigRegistry.ForFile("myapp.ini")
+    .AddSearchPath(AppContext.BaseDirectory)
+    .LockFile()           // ← prevents external writes while the app is running
+    .RegisterSection<IAppSettings>(new AppSettingsImpl())
+    .Build();
+
+// The lock is released when config.Dispose() is called (or when the using block exits).
+```
+
+> **Note:** The lock allows other processes to **read** the file but prevents writes.
+
+---
+
+## File-change monitoring
+
+Call `.MonitorFile()` to automatically reload when the file is changed by another process.
+An optional `FileChangedCallback` lets you control the reload decision:
+
+```csharp
+using var config = IniConfigRegistry.ForFile("myapp.ini")
+    .AddSearchPath(AppContext.BaseDirectory)
+    .MonitorFile(filePath =>
+    {
+        // Decide what to do when the file changes externally
+        if (AppIsStartingUp)
+            return ReloadDecision.Postpone;   // reload later
+        if (UserIsEditing)
+            return ReloadDecision.Ignore;     // skip this change
+        return ReloadDecision.Reload;         // reload immediately (default)
+    })
+    .RegisterSection<IAppSettings>(new AppSettingsImpl())
+    .Build();
+
+// When you are ready to apply a postponed reload:
+config.RequestPostponedReload();
+```
+
+| `ReloadDecision` value | Effect |
+|------------------------|--------|
+| `Reload` | Reload immediately (this is the default when no callback is supplied) |
+| `Ignore` | Skip this notification — no reload occurs |
+| `Postpone` | Delay until `RequestPostponedReload()` is called |
+
+---
+
+## External value sources
+
+`IValueSource` is an extensibility point that lets you inject values from **any external
+system** — Windows Registry, environment variables, a web service, a secrets vault, etc.
+
+```csharp
+// Implement IValueSource
+public sealed class EnvironmentValueSource : IValueSource
+{
+    public event EventHandler<ValueChangedEventArgs>? ValueChanged;
+
+    public bool TryGetValue(string sectionName, string key, out string? value)
+    {
+        // Env var convention: SECTION__KEY (double underscore separator)
+        var envVar = $"{sectionName}__{key}".ToUpperInvariant();
+        value = Environment.GetEnvironmentVariable(envVar);
+        return value is not null;
+    }
+}
+
+// Register it — sources are applied after the user file and constants
+using var config = IniConfigRegistry.ForFile("myapp.ini")
+    .AddSearchPath(AppContext.BaseDirectory)
+    .AddValueSource(new EnvironmentValueSource())
+    .RegisterSection<IAppSettings>(new AppSettingsImpl())
+    .Build();
+```
+
+When a source's value changes at runtime, raise `ValueChanged` and call `config.Reload()`
+to re-apply all sources and update the section properties.
+
+```csharp
+// Notify the framework that a value changed (e.g. from a background polling thread):
+valueSource.RaiseChanged(sectionName: "App", key: "FeatureFlag");
+config.Reload();
+```
+
+---
+
+## Validation (INotifyDataErrorInfo)
+
+Implement `IDataValidation<TSelf>` on your section interface to enable WPF/Avalonia/WinForms
+data binding validation.  The source generator automatically implements
+`System.ComponentModel.INotifyDataErrorInfo` on the generated class and re-runs validation
+whenever a property annotated with `NotifyPropertyChanged = true` changes.
+
+```csharp
+[IniSection("Server")]
+public interface IServerSettings : IIniSection, IDataValidation<IServerSettings>
+{
+    [IniValue(DefaultValue = "8080", NotifyPropertyChanged = true)]
+    int Port { get; set; }
+
+    [IniValue(DefaultValue = "localhost", NotifyPropertyChanged = true)]
+    string? Host { get; set; }
+
+    // ── Validation logic — lives directly inside the interface (C# 11+) ──────
+    static new IEnumerable<string> ValidateProperty(IServerSettings self, string propertyName)
+    {
+        return propertyName switch
+        {
+            nameof(Port) when self.Port is < 1 or > 65535
+                => new[] { "Port must be between 1 and 65535." },
+            nameof(Host) when string.IsNullOrWhiteSpace(self.Host)
+                => new[] { "Host must not be empty." },
+            _ => Array.Empty<string>()
+        };
+    }
+}
+```
+
+The generated class automatically implements `INotifyDataErrorInfo`, so WPF/Avalonia
+bindings pick up errors without any additional code:
+
+```xml
+<!-- WPF XAML — Binding.ValidatesOnNotifyDataErrors=True is the default in .NET -->
+<TextBox Text="{Binding Port, UpdateSourceTrigger=PropertyChanged}" />
+```
+
+For .NET Framework / instance-method style, implement the non-generic `IDataValidation`:
+
+```csharp
+[IniSection("Server")]
+public interface IServerSettings : IIniSection, IDataValidation
+{
+    [IniValue(DefaultValue = "8080", NotifyPropertyChanged = true)]
+    int Port { get; set; }
+}
+
+// Partial class provides the instance implementation
+public partial class ServerSettingsImpl
+{
+    public IEnumerable<string> ValidateProperty(string propertyName)
+    {
+        if (propertyName == nameof(Port) && Port is < 1 or > 65535)
+            yield return "Port must be between 1 and 65535.";
+    }
+}
 ```
 
 ---
@@ -216,40 +474,119 @@ generated class so the framework can dispatch the hooks at runtime.
 
 | Interface | Method signature | Behaviour |
 |-----------|-----------------|-----------|
-| `IAfterLoad<TSelf>` | `static virtual void OnAfterLoad(TSelf self)` | Default: no-op. Called after `Build()`. |
+| `IAfterLoad<TSelf>` | `static virtual void OnAfterLoad(TSelf self)` | Default: no-op. Called after `Build()` and `Reload()`. |
 | `IBeforeSave<TSelf>` | `static virtual bool OnBeforeSave(TSelf self)` | Default: returns `true`. Return `false` to cancel save. |
 | `IAfterSave<TSelf>` | `static virtual void OnAfterSave(TSelf self)` | Default: no-op. Called after a successful write. |
 
-### Legacy: partial-class pattern
+### Legacy: partial-class pattern (.NET Framework / instance methods)
 
-If you target frameworks older than .NET 7, or prefer the instance-method approach,
+If you target **.NET Framework** (4.x), or prefer instance methods in a separate file,
 implement the non-generic `IAfterLoad`, `IBeforeSave`, and/or `IAfterSave` interfaces
-and provide the implementations in a `partial class` alongside the generated code:
+and provide the implementations in a `partial class` alongside the generated code.
+
+#### Step-by-step
+
+**1. Declare the interface** (as usual):
 
 ```csharp
-// Interface (section definition)
-[IniSection]
+// IMySettings.cs
+[IniSection("App")]
 public interface IMySettings : IIniSection, IAfterLoad, IBeforeSave, IAfterSave
 {
     string? Value { get; set; }
 }
+```
 
-// Partial class (consumer code — in its own file)
+**2. Add a partial class file** named after the **generated class** — not the interface.
+The generated class for `IMySettings` is `MySettingsImpl`, so create `MySettingsImpl.cs`
+(or any other file name — what matters is that the class name and namespace match):
+
+```csharp
+// MySettingsImpl.cs  ← consumer-written file; sits alongside MySettingsImpl.g.cs
+namespace MyApp;
+
 public partial class MySettingsImpl
 {
+    // ── IAfterLoad ────────────────────────────────────────────────────────────
     public void OnAfterLoad()
     {
+        // Called after Build() and Reload() complete
         Value ??= "loaded-default";
     }
 
+    // ── IBeforeSave ───────────────────────────────────────────────────────────
     public bool OnBeforeSave()
     {
         return Value is not null;  // cancel save if Value is null
     }
 
+    // ── IAfterSave ────────────────────────────────────────────────────────────
     public void OnAfterSave()
     {
         Console.WriteLine("Settings saved!");
+    }
+}
+```
+
+> **Key rule:** The partial class must be in the **same namespace** as the generated class
+> (i.e. the same namespace as the interface) and must have the **exact same class name**
+> (`{InterfaceName-without-leading-I}Impl`).
+
+#### .NET Framework startup pattern
+
+```csharp
+// Program.cs / App.xaml.cs
+private static IMySettings? _settings;
+
+static void Main()
+{
+    var config = IniConfigRegistry.ForFile("myapp.ini")
+        .AddSearchPath(AppDomain.CurrentDomain.BaseDirectory)
+        .RegisterSection<IMySettings>(new MySettingsImpl())
+        .Build();
+
+    // Store the section reference once — it never changes, even after Reload()
+    _settings = config.GetSection<IMySettings>();
+
+    // … rest of startup
+}
+```
+
+---
+
+## Singleton guarantee and dependency injection
+
+**`GetSection<T>()` always returns the same object reference**, even after `Reload()`.
+
+This is a deliberate design choice: the framework updates the *properties* of the existing
+section object in place during a reload, so any code that holds a reference to the section
+will automatically see the new values without re-querying the registry.
+
+This makes it safe to register sections as **singletons** in a DI container:
+
+```csharp
+// ASP.NET Core / Microsoft.Extensions.DependencyInjection
+var config = IniConfigRegistry.ForFile("appsettings.ini")
+    .AddSearchPath(AppContext.BaseDirectory)
+    .RegisterSection<IAppSettings>(new AppSettingsImpl())
+    .Build();
+
+// Register the section as a singleton — the reference stays valid after Reload()
+builder.Services.AddSingleton(config.GetSection<IAppSettings>());
+
+// Alternatively, expose the IniConfig itself for manual reload triggering:
+builder.Services.AddSingleton(config);
+```
+
+```csharp
+// Constructor injection — works seamlessly
+public class MyService
+{
+    private readonly IAppSettings _settings;
+
+    public MyService(IAppSettings settings)
+    {
+        _settings = settings;  // always up-to-date, even after a reload
     }
 }
 ```
@@ -358,6 +695,104 @@ public interface IAppInfo : IIniSection
 }
 ```
 
+### Encrypting sensitive values
+
+Sensitive values (passwords, API keys, connection strings) can be stored encrypted in the
+INI file by combining a **custom converter** that encrypts/decrypts on the fly with the
+`IAfterLoad` / `IBeforeSave` hooks.
+
+#### Option A — Encrypt/decrypt in a custom converter (recommended)
+
+The converter is responsible for the raw string stored on disk. Everything else in the
+framework (defaults, reload, transactional) continues to work normally.
+
+```csharp
+/// <summary>
+/// Stores a string value AES-encrypted (Base64) in the INI file.
+/// Replace the key derivation with your own secure mechanism (e.g. DPAPI, Azure KeyVault).
+/// </summary>
+public sealed class EncryptedStringConverter : IValueConverter
+{
+    // ⚠️  Hard-coded key for illustration only — use a proper key-management solution!
+    private static readonly byte[] Key = Convert.FromBase64String("your-32-byte-key-base64==");
+    private static readonly byte[] IV  = Convert.FromBase64String("your-16-byte-iv-base64=");
+
+    public Type TargetType => typeof(string);
+
+    public object? ConvertFromString(string? raw)
+    {
+        if (raw is null) return null;
+        using var aes = Aes.Create();
+        aes.Key = Key; aes.IV = IV;
+        var cipher = Convert.FromBase64String(raw);
+        using var decryptor = aes.CreateDecryptor();
+        var plain = decryptor.TransformFinalBlock(cipher, 0, cipher.Length);
+        return System.Text.Encoding.UTF8.GetString(plain);
+    }
+
+    public string? ConvertToString(object? value)
+    {
+        if (value is not string s) return null;
+        using var aes = Aes.Create();
+        aes.Key = Key; aes.IV = IV;
+        var plain = System.Text.Encoding.UTF8.GetBytes(s);
+        using var encryptor = aes.CreateEncryptor();
+        var cipher = encryptor.TransformFinalBlock(plain, 0, plain.Length);
+        return Convert.ToBase64String(cipher);
+    }
+}
+```
+
+```csharp
+// Register before Build()
+ValueConverterRegistry.Register(new EncryptedStringConverter());
+
+[IniSection("Credentials")]
+public interface ICredentials : IIniSection
+{
+    [IniValue(DefaultValue = "")]
+    string? ApiKey { get; set; }   // stored as encrypted Base64 in the file
+}
+```
+
+#### Option B — Decrypt in `IAfterLoad`, re-encrypt in `IBeforeSave`
+
+This approach stores the encrypted value in the INI file and keeps the plaintext only
+in memory.  It is useful when the property type must remain `string` without a custom converter.
+
+```csharp
+[IniSection("Credentials")]
+public interface ICredentials
+    : IIniSection,
+      IAfterLoad<ICredentials>,
+      IBeforeSave<ICredentials>
+{
+    // Raw (encrypted) value as stored in the file — treated as opaque by the framework
+    [IniValue(DefaultValue = "")]
+    string? ApiKeyEncrypted { get; set; }
+
+    // Plaintext — marked ReadOnly so it is never written back to the file
+    [IniValue(ReadOnly = true)]
+    string? ApiKeyPlain { get; set; }
+
+    static new void OnAfterLoad(ICredentials self)
+    {
+        // Decrypt once after loading
+        self.ApiKeyPlain = Decrypt(self.ApiKeyEncrypted);
+    }
+
+    static new bool OnBeforeSave(ICredentials self)
+    {
+        // Re-encrypt before writing; keep plaintext in memory only
+        self.ApiKeyEncrypted = Encrypt(self.ApiKeyPlain);
+        return true;
+    }
+
+    private static string? Decrypt(string? cipher) => /* … your crypto … */ cipher;
+    private static string? Encrypt(string? plain)  => /* … your crypto … */ plain;
+}
+```
+
 ---
 
 ## Registry API reference
@@ -373,11 +808,28 @@ public interface IAppInfo : IIniSection
 | `Unregister(fileName)` | Removes a registration (useful in tests) |
 | `Clear()` | Removes all registrations (useful in tests) |
 
-`IniConfig` methods:
+`IniConfig` methods and properties:
+
+| Member | Description |
+|--------|-------------|
+| `GetSection<T>()` | Returns the registered section instance; throws if not found. **Always returns the same object reference.** |
+| `Save()` | Writes all section values to disk, honoring `IBeforeSave`/`IAfterSave` hooks |
+| `Reload()` | Re-reads all layers in place; section references remain valid |
+| `RequestPostponedReload()` | Triggers a reload that was earlier postponed by a `FileChangedCallback` |
+| `Reloaded` | Event raised after a successful `Reload()` |
+| `FileName` | The logical file name passed to `ForFile()` |
+| `LoadedFromPath` | Resolved absolute path from which the file was actually read |
+| `Dispose()` | Releases the file lock (if any) and stops the file-system watcher |
+
+`IniConfigBuilder` fluent methods:
 
 | Method | Description |
 |--------|-------------|
-| `GetSection<T>()` | Returns the registered section instance; throws if not found |
-| `Save()` | Writes all section values to disk, honoring `IBeforeSave`/`IAfterSave` hooks |
-| `FileName` | The logical file name passed to `ForFile()` |
-| `LoadedFromPath` | Resolved absolute path from which the file was actually read |
+| `AddSearchPath(path)` | Adds a directory to search for the INI file |
+| `AddDefaultsFile(path)` | Registers a file that supplies default values (applied before the user file) |
+| `AddConstantsFile(path)` | Registers a file that supplies admin-forced constants (applied last) |
+| `AddValueSource(source)` | Registers an `IValueSource` (applied after constants) |
+| `LockFile()` | Holds the file open read-exclusively for the process lifetime |
+| `MonitorFile([callback])` | Installs a `FileSystemWatcher`; optional callback controls reload decision |
+| `RegisterSection<T>(impl)` | Registers a section with its generated implementation |
+| `Build()` | Loads the file, fires hooks, and registers the config in the global registry |
