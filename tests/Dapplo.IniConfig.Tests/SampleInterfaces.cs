@@ -159,3 +159,24 @@ public sealed class DictionaryValueSource : IValueSource
         => ValueChanged?.Invoke(this, new ValueChangedEventArgs(section, key));
 }
 
+// ── Async lifecycle sample interfaces ─────────────────────────────────────────
+
+/// <summary>
+/// Section that hooks into load/save lifecycle using async hooks (non-generic pattern).
+/// The consumer implements the async hook methods in a separate partial class file.
+/// </summary>
+[IniSection("AsyncLifecycle")]
+public interface IAsyncLifecycleSettings : IIniSection, IAfterLoadAsync, IBeforeSaveAsync, IAfterSaveAsync
+{
+    string? Value { get; set; }
+}
+
+/// <summary>
+/// Section that cancels saves asynchronously via <see cref="IBeforeSaveAsync"/>.
+/// </summary>
+[IniSection("AsyncCancelSave")]
+public interface IAsyncCancelSaveSettings : IIniSection, IBeforeSaveAsync
+{
+    string? Value { get; set; }
+}
+
