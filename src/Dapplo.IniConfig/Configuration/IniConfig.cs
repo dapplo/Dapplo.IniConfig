@@ -36,8 +36,12 @@ public sealed class IniConfig : IDisposable
     private FileSystemWatcher? _watcher;
     private FileChangedCallback? _fileChangedCallback;
 
-    // Guards against reacting to our own writes (set just before we write, cleared after).
-    private volatile bool _isSelfWriting;
+    // UTC ticks recorded after each self-write; used to suppress the resulting watcher event.
+    // Initialized to a value far in the past so no suppression occurs before the first Save().
+    private long _lastSelfWriteTimestamp = long.MinValue / 2;
+
+    // How long after a self-write to suppress watcher events (handles late-arriving notifications).
+    private const long SelfWriteSuppressionTicks = 2L * TimeSpan.TicksPerSecond;
 
     // Tracks whether a postponed reload is pending.
     private volatile bool _postponedReloadPending;
@@ -130,16 +134,12 @@ public sealed class IniConfig : IDisposable
         // Build an IniFile from current section values
         var iniFile = BuildIniFile();
 
-        // Suppress our own watcher notification
-        _isSelfWriting = true;
-        try
-        {
-            IniFileWriter.WriteFile(LoadedFromPath!, iniFile, Encoding);
-        }
-        finally
-        {
-            _isSelfWriting = false;
-        }
+        // Stamp before writing so the watcher event (which can fire during or immediately
+        // after the write, on a background thread) always sees the timestamp already set.
+        // A boolean flag reset in a finally block races with the async event; this window
+        // approach handles both early and late-arriving watcher notifications reliably.
+        Volatile.Write(ref _lastSelfWriteTimestamp, DateTime.UtcNow.Ticks);
+        IniFileWriter.WriteFile(LoadedFromPath!, iniFile, Encoding);
 
         // Clear dirty flags after successful write
         ClearAllDirtyFlags();
@@ -294,8 +294,10 @@ public sealed class IniConfig : IDisposable
 
     private void OnFileChanged(object sender, FileSystemEventArgs e)
     {
-        // Ignore changes caused by our own Save()
-        if (_isSelfWriting) return;
+        // Ignore changes caused by our own Save().  The watcher event arrives asynchronously
+        // (potentially after Save() has already returned), so a simple boolean flag cannot
+        // reliably guard the window.  A timestamp comparison handles late-arriving events.
+        if (DateTime.UtcNow.Ticks - Volatile.Read(ref _lastSelfWriteTimestamp) < SelfWriteSuppressionTicks) return;
 
         var decision = _fileChangedCallback?.Invoke(e.FullPath) ?? ReloadDecision.Reload;
 
