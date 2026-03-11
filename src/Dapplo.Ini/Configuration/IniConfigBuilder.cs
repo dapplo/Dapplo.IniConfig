@@ -2,6 +2,7 @@
 // Licensed under the MIT license. See LICENSE file in the project root for details.
 
 using System.Text;
+using Dapplo.Ini.Configuration;
 using Dapplo.Ini.Interfaces;
 using Dapplo.Ini.Parsing;
 #if NET
@@ -41,6 +42,12 @@ public sealed class IniConfigBuilder
 
     // Auto-save interval (null = disabled)
     private TimeSpan? _autoSaveInterval;
+
+    // Migration: unknown-key callback (null = no callback)
+    private UnknownKeyCallback? _unknownKeyCallback;
+
+    // Migration: track assembly version in the INI file
+    private bool _trackAssemblyVersion;
 
     internal IniConfigBuilder(string fileName)
     {
@@ -237,7 +244,69 @@ public sealed class IniConfigBuilder
         return this;
     }
 
-    // ── sections ──────────────────────────────────────────────────────────────
+    // ── migration support ─────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Registers a callback that is invoked whenever a key is read from the INI file that does
+    /// not correspond to any declared property on the registered section interface.
+    /// <para>
+    /// Use this for migration scenarios.  For example, when a property has been renamed you can
+    /// read the old value via <paramref name="callback"/> and set the replacement property:
+    /// </para>
+    /// <code>
+    /// builder.OnUnknownKey((sectionName, key, value) =>
+    /// {
+    ///     if (sectionName == "AppConfig" &amp;&amp; key == "OldTimeout")
+    ///         section.Timeout = int.TryParse(value, out var t) ? t : 30;
+    /// });
+    /// </code>
+    /// <para>
+    /// As an alternative, implement <see cref="Interfaces.IUnknownKey"/> (or
+    /// <see cref="Interfaces.IUnknownKey{TSelf}"/> on .NET 7+) directly on the section interface
+    /// so that the migration logic lives next to the affected properties.
+    /// </para>
+    /// </summary>
+    /// <param name="callback">
+    /// The delegate to invoke.  Receives the section name, the unrecognised key, and its raw
+    /// string value.
+    /// </param>
+    public IniConfigBuilder OnUnknownKey(UnknownKeyCallback callback)
+    {
+        _unknownKeyCallback = callback ?? throw new ArgumentNullException(nameof(callback));
+        return this;
+    }
+
+    /// <summary>
+    /// Enables assembly-version tracking.
+    /// <para>
+    /// When opted in, the framework writes the <see cref="System.Version"/> of the assembly that
+    /// defines each registered section interface into the INI file under the special key
+    /// <c>__Version</c> every time the file is saved.  On the next load the stored version string
+    /// is made available via <see cref="IIniSection.GetRawValue">GetRawValue("__Version")</see>
+    /// so that an <see cref="Interfaces.IAfterLoad"/> hook can compare it with the current
+    /// assembly version and perform migrations accordingly:
+    /// </para>
+    /// <code>
+    /// static void OnAfterLoad(IMySettings self)
+    /// {
+    ///     var stored  = Version.TryParse(self.GetRawValue("__Version"), out var v) ? v : new Version(0, 0);
+    ///     var current = typeof(IMySettings).Assembly.GetName().Version!;
+    ///     if (stored &lt; current)
+    ///     {
+    ///         // perform upgrade steps
+    ///     }
+    /// }
+    /// </code>
+    /// <para>
+    /// The <c>__Version</c> key is never treated as an "unknown key" and will never trigger
+    /// callbacks registered via <see cref="OnUnknownKey"/>.
+    /// </para>
+    /// </summary>
+    public IniConfigBuilder TrackAssemblyVersion()
+    {
+        _trackAssemblyVersion = true;
+        return this;
+    }
 
     /// <summary>
     /// Registers an <see cref="IIniSection"/> instance under the explicit interface type
@@ -291,6 +360,8 @@ public sealed class IniConfigBuilder
         config.ConstantFilePaths.AddRange(_constantFilePaths);
         config.ValueSources.AddRange(_valueSources);
         config.ValueSourcesAsync.AddRange(_valueSourcesAsync);
+        config.UnknownKeyHandler = _unknownKeyCallback;
+        config.TrackAssemblyVersion = _trackAssemblyVersion;
 
         // Seed sections with defaults
         foreach (var kvp in _sections)
@@ -412,6 +483,8 @@ public sealed class IniConfigBuilder
         config.ConstantFilePaths.AddRange(_constantFilePaths);
         config.ValueSources.AddRange(_valueSources);
         config.ValueSourcesAsync.AddRange(_valueSourcesAsync);
+        config.UnknownKeyHandler = _unknownKeyCallback;
+        config.TrackAssemblyVersion = _trackAssemblyVersion;
 
         // Seed sections with defaults
         foreach (var kvp in _sections)
@@ -529,7 +602,23 @@ public sealed class IniConfigBuilder
             if (iniSection == null) continue;
 
             foreach (var entry in iniSection.Entries)
+            {
                 section.SetRawValue(entry.Key, entry.Value);
+
+                // The version tracking key is managed by the framework — never raise unknown-key
+                // notifications for it, so that version tracking and unknown-key callbacks can be
+                // used together without __Version appearing in the callback.
+                if (string.Equals(entry.Key, IniConfig.VersionKey, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                // Notify listeners when the key is not recognised by the section's interface.
+                if (section is IniSectionBase sectionBase && !sectionBase.IsKnownKey(entry.Key))
+                {
+                    if (section is IUnknownKey unknownKeyHandler)
+                        unknownKeyHandler.OnUnknownKey(entry.Key, entry.Value);
+                    config.UnknownKeyHandler?.Invoke(section.SectionName, entry.Key, entry.Value);
+                }
+            }
         }
     }
 }

@@ -27,6 +27,24 @@ public sealed class IniConfig : IDisposable
     /// <summary>Encoding used when reading and writing the INI file. Defaults to UTF-8.</summary>
     internal Encoding Encoding = Encoding.UTF8;
 
+    // ── Migration / unknown-key callback ─────────────────────────────────────
+
+    /// <summary>
+    /// Optional callback invoked for every key in the INI file that has no matching property
+    /// on the registered section interface.  Set via <see cref="IniConfigBuilder.OnUnknownKey"/>.
+    /// </summary>
+    internal UnknownKeyCallback? UnknownKeyHandler;
+
+    // ── Assembly-version tracking ─────────────────────────────────────────────
+
+    /// <summary>
+    /// When <c>true</c> the framework writes the assembly version of each section interface's
+    /// containing assembly into the INI file under the key <c>__Version</c>, and makes it
+    /// available via <see cref="IIniSection.GetRawValue"/> during <see cref="IAfterLoad"/> hooks.
+    /// Enabled via <see cref="IniConfigBuilder.TrackAssemblyVersion"/>.
+    /// </summary>
+    internal bool TrackAssemblyVersion;
+
     // ── File lock ─────────────────────────────────────────────────────────────
 
     // Held when the caller requested file locking via IniConfigBuilder.LockFile().
@@ -621,16 +639,29 @@ public sealed class IniConfig : IDisposable
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
+    // The special key the framework uses to persist the section's assembly version.
+    internal const string VersionKey = "__Version";
+
     internal IniFile BuildIniFile()
     {
         var iniFile = new Parsing.IniFile();
-        foreach (var section in Sections.Values)
+        foreach (var kvp in Sections)
         {
+            var type = kvp.Key;
+            var section = kvp.Value;
             var iniSection = iniFile.GetOrAddSection(section.SectionName);
             if (section is IniSectionBase sectionBase)
             {
-                foreach (var kvp in sectionBase.GetAllRawValues())
-                    iniSection.SetValue(kvp.Key, kvp.Value);
+                foreach (var rawKvp in sectionBase.GetAllRawValues())
+                    iniSection.SetValue(rawKvp.Key, rawKvp.Value);
+            }
+
+            // When version tracking is enabled, write the assembly version of the interface type
+            // into the INI section so that IAfterLoad hooks can detect version changes.
+            if (TrackAssemblyVersion)
+            {
+                var version = type.Assembly.GetName().Version;
+                iniSection.SetValue(VersionKey, version?.ToString() ?? "0.0.0.0");
             }
         }
         return iniFile;
@@ -644,7 +675,23 @@ public sealed class IniConfig : IDisposable
             if (iniSection == null) continue;
 
             foreach (var entry in iniSection.Entries)
+            {
                 section.SetRawValue(entry.Key, entry.Value);
+
+                // The version tracking key is managed by the framework — never raise unknown-key
+                // notifications for it, so that version tracking and unknown-key callbacks can be
+                // used together without __Version appearing in the callback.
+                if (string.Equals(entry.Key, VersionKey, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                // Notify listeners when the key is not recognised by the section's interface.
+                if (section is IniSectionBase sectionBase && !sectionBase.IsKnownKey(entry.Key))
+                {
+                    if (section is IUnknownKey unknownKeyHandler)
+                        unknownKeyHandler.OnUnknownKey(entry.Key, entry.Value);
+                    UnknownKeyHandler?.Invoke(section.SectionName, entry.Key, entry.Value);
+                }
+            }
         }
     }
 
