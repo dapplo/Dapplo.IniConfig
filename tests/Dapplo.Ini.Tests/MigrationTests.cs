@@ -265,7 +265,7 @@ public sealed class MigrationTests : IDisposable
     // ── Integration: version-aware migration via IAfterLoad ───────────────────
 
     [Fact]
-    public void VersionTracking_AfterLoad_CanCompareStovedVersionToCurrentVersion()
+    public void VersionTracking_AfterLoad_CanCompareStoredVersionToCurrentVersion()
     {
         // Simulate a file written by version 0.0.0.1 (very old).
         WriteIni("version-migration.ini",
