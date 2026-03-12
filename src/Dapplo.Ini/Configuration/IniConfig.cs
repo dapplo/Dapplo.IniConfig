@@ -35,15 +35,23 @@ public sealed class IniConfig : IDisposable
     /// </summary>
     internal UnknownKeyCallback? UnknownKeyHandler;
 
-    // ── Assembly-version tracking ─────────────────────────────────────────────
+    // ── Metadata section ──────────────────────────────────────────────────────
 
     /// <summary>
-    /// When <c>true</c> the framework writes the assembly version of each section interface's
-    /// containing assembly into the INI file under the key <c>__Version</c>, and makes it
-    /// available via <see cref="IIniSection.GetRawValue"/> during <see cref="IAfterLoad"/> hooks.
-    /// Enabled via <see cref="IniConfigBuilder.TrackAssemblyVersion"/>.
+    /// When non-null the framework writes a <c>[__metadata__]</c> section (prepended to the
+    /// file so it is always first) on every Save.
+    /// Contains the configured <c>Version</c>, <c>CreatedBy</c>, and a locale-formatted
+    /// <c>SavedOn</c> timestamp.
+    /// Enabled via <see cref="IniConfigBuilder.EnableMetadata"/>.
     /// </summary>
-    internal bool TrackAssemblyVersion;
+    internal IniMetadataConfig? MetadataConfig;
+
+    /// <summary>
+    /// The metadata that was read from the <c>[__metadata__]</c> section of the INI file
+    /// on the last load / reload.
+    /// <c>null</c> when the section did not exist in the file (e.g. first-run or no metadata enabled).
+    /// </summary>
+    public IniMetadata? Metadata { get; internal set; }
 
     // ── File lock ─────────────────────────────────────────────────────────────
 
@@ -639,15 +647,14 @@ public sealed class IniConfig : IDisposable
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    // The special key the framework uses to persist the section's assembly version.
-    internal const string VersionKey = "__Version";
+    // The name of the special metadata section prepended to the INI file when opted in.
+    internal const string MetadataSectionName = "__metadata__";
 
     internal IniFile BuildIniFile()
     {
         var iniFile = new Parsing.IniFile();
         foreach (var kvp in Sections)
         {
-            var type = kvp.Key;
             var section = kvp.Value;
             var iniSection = iniFile.GetOrAddSection(section.SectionName);
             if (section is IniSectionBase sectionBase)
@@ -655,20 +662,40 @@ public sealed class IniConfig : IDisposable
                 foreach (var rawKvp in sectionBase.GetAllRawValues())
                     iniSection.SetValue(rawKvp.Key, rawKvp.Value);
             }
-
-            // When version tracking is enabled, write the assembly version of the interface type
-            // into the INI section so that IAfterLoad hooks can detect version changes.
-            if (TrackAssemblyVersion)
-            {
-                var version = type.Assembly.GetName().Version;
-                iniSection.SetValue(VersionKey, version?.ToString() ?? "0.0.0.0");
-            }
         }
+
+        // When metadata is enabled, build the [__metadata__] section and prepend it
+        // so it is always the first section in the written file.
+        if (MetadataConfig != null)
+        {
+            var metaSection = new Parsing.IniSection(MetadataSectionName, Array.Empty<string>());
+            metaSection.SetValue("Version", MetadataConfig.Version);
+            metaSection.SetValue("CreatedBy", MetadataConfig.ApplicationName);
+            metaSection.SetValue("SavedOn", DateTime.Now.ToString());
+            iniFile.PrependSection(metaSection);
+        }
+
         return iniFile;
     }
 
     private void ApplyIniFile(IniFile iniFile)
     {
+        // Read and store the metadata section when it exists in the file.
+        var metaIniSection = iniFile.GetSection(MetadataSectionName);
+        if (metaIniSection != null)
+        {
+            Metadata = new IniMetadata
+            {
+                Version         = metaIniSection.GetValue("Version"),
+                ApplicationName = metaIniSection.GetValue("CreatedBy"),
+                SavedOn         = metaIniSection.GetValue("SavedOn"),
+            };
+        }
+        else
+        {
+            Metadata = null;
+        }
+
         foreach (var section in Sections.Values)
         {
             var iniSection = iniFile.GetSection(section.SectionName);
@@ -677,12 +704,6 @@ public sealed class IniConfig : IDisposable
             foreach (var entry in iniSection.Entries)
             {
                 section.SetRawValue(entry.Key, entry.Value);
-
-                // The version tracking key is managed by the framework — never raise unknown-key
-                // notifications for it, so that version tracking and unknown-key callbacks can be
-                // used together without __Version appearing in the callback.
-                if (string.Equals(entry.Key, VersionKey, StringComparison.OrdinalIgnoreCase))
-                    continue;
 
                 // Notify listeners when the key is not recognised by the section's interface.
                 if (section is IniSectionBase sectionBase && !sectionBase.IsKnownKey(entry.Key))

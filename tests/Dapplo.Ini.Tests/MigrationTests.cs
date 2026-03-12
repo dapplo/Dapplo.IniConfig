@@ -196,70 +196,109 @@ public sealed class MigrationTests : IDisposable
         Assert.Throws<ArgumentNullException>(() => builder.OnUnknownKey(null!));
     }
 
-    // ── Assembly version tracking ─────────────────────────────────────────────
+    // ── Metadata section ([__metadata__]) ────────────────────────────────────
 
     [Fact]
-    public void TrackAssemblyVersion_WritesVersionToFile()
+    public void EnableMetadata_WritesMetadataSectionFirst()
     {
         var section = new GeneralSettingsImpl();
-        var config = IniConfigRegistry.ForFile("version-track.ini")
+        var config = IniConfigRegistry.ForFile("metadata-write.ini")
             .AddSearchPath(_tempDir)
             .RegisterSection<IGeneralSettings>(section)
-            .TrackAssemblyVersion()
+            .EnableMetadata(version: "1.2.3", applicationName: "TestApp")
             .Build();
 
-        // Mark dirty and save so that __Version is written.
-        section.AppName = "WithVersion";
+        // Mark dirty and save so the file is written.
+        section.AppName = "WithMetadata";
         config.Save();
 
         var written = File.ReadAllText(config.LoadedFromPath!);
-        Assert.Contains("__Version", written, StringComparison.OrdinalIgnoreCase);
+
+        // The metadata section must appear before the [General] section.
+        var metaIdx    = written.IndexOf("[__metadata__]", StringComparison.OrdinalIgnoreCase);
+        var generalIdx = written.IndexOf("[General]",      StringComparison.OrdinalIgnoreCase);
+        Assert.True(metaIdx >= 0, "[__metadata__] section must be present.");
+        Assert.True(metaIdx < generalIdx,
+            "[__metadata__] section must appear before [General].");
+
+        Assert.Contains("Version = 1.2.3",   written);
+        Assert.Contains("CreatedBy = TestApp", written);
+        Assert.Contains("SavedOn",             written);
     }
 
     [Fact]
-    public void TrackAssemblyVersion_StoredVersionAccessibleViaGetRawValue()
+    public void EnableMetadata_MetadataAccessibleAfterLoad()
     {
-        // Write a file that already has a __Version entry.
-        WriteIni("stored-version.ini", "[General]\nAppName = Test\n__Version = 1.0.0.0");
+        // Write a file that already has a [__metadata__] section.
+        WriteIni("metadata-read.ini",
+            "[__metadata__]\nVersion = 2.0.0\nCreatedBy = Greenshot\nSavedOn = 2026.01.01\n[General]\nAppName = Test");
 
-        string? storedVersionStr = null;
         var section = new GeneralSettingsImpl();
-
-        // Use the builder-level unknown key callback only as a safety net —
-        // __Version must NOT appear there.
-        bool versionAppearedInUnknownCallback = false;
-        IniConfigRegistry.ForFile("stored-version.ini")
+        var config = IniConfigRegistry.ForFile("metadata-read.ini")
             .AddSearchPath(_tempDir)
             .RegisterSection<IGeneralSettings>(section)
-            .TrackAssemblyVersion()
-            .OnUnknownKey((_, k, _) =>
-            {
-                if (k.Equals("__Version", StringComparison.OrdinalIgnoreCase))
-                    versionAppearedInUnknownCallback = true;
-            })
+            .EnableMetadata()
             .Build();
 
-        storedVersionStr = section.GetRawValue("__Version");
-
-        Assert.Equal("1.0.0.0", storedVersionStr);
-        Assert.False(versionAppearedInUnknownCallback,
-            "__Version must not appear in the unknown-key callback.");
+        Assert.NotNull(config.Metadata);
+        Assert.Equal("2.0.0",     config.Metadata!.Version);
+        Assert.Equal("Greenshot", config.Metadata.ApplicationName);
+        Assert.Equal("2026.01.01", config.Metadata.SavedOn);
     }
 
     [Fact]
-    public void TrackAssemblyVersion_VersionNotWritten_WhenNotOptedIn()
+    public void EnableMetadata_MetadataIsNullWhenSectionAbsent()
     {
+        WriteIni("no-metadata.ini", "[General]\nAppName = Test");
+
         var section = new GeneralSettingsImpl();
-        var config = IniConfigRegistry.ForFile("no-version-track.ini")
+        var config = IniConfigRegistry.ForFile("no-metadata.ini")
             .AddSearchPath(_tempDir)
             .RegisterSection<IGeneralSettings>(section)
-            .Build(); // No TrackAssemblyVersion()
+            .EnableMetadata()
+            .Build();
 
-        section.AppName = "NoVersion";
+        // File has no [__metadata__] section — Metadata should be null.
+        Assert.Null(config.Metadata);
+    }
+
+    [Fact]
+    public void EnableMetadata_NotEnabled_MetadataSectionNotWritten()
+    {
+        var section = new GeneralSettingsImpl();
+        var config = IniConfigRegistry.ForFile("no-metadata-write.ini")
+            .AddSearchPath(_tempDir)
+            .RegisterSection<IGeneralSettings>(section)
+            .Build(); // No EnableMetadata()
+
+        section.AppName = "NoMeta";
         config.Save();
 
         var written = File.ReadAllText(config.LoadedFromPath!);
-        Assert.DoesNotContain("__Version", written, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("__metadata__", written, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void EnableMetadata_MetadataNotTriggeredInUnknownKeyCallback()
+    {
+        // Write a file with a [__metadata__] section plus an unknown key in [General].
+        WriteIni("metadata-unknown.ini",
+            "[__metadata__]\nVersion = 1.0\nCreatedBy = App\nSavedOn = now\n[General]\nUnknownKey = oops");
+
+        var unknownKeys = new List<string>();
+        var section = new GeneralSettingsImpl();
+        IniConfigRegistry.ForFile("metadata-unknown.ini")
+            .AddSearchPath(_tempDir)
+            .RegisterSection<IGeneralSettings>(section)
+            .EnableMetadata()
+            .OnUnknownKey((_, k, _) => unknownKeys.Add(k))
+            .Build();
+
+        // Only "UnknownKey" from [General] should appear; nothing from [__metadata__].
+        Assert.Contains("UnknownKey", unknownKeys);
+        Assert.DoesNotContain("Version",   unknownKeys);
+        Assert.DoesNotContain("CreatedBy", unknownKeys);
+        Assert.DoesNotContain("SavedOn",   unknownKeys);
     }
 
     // ── Integration: version-aware migration via IAfterLoad ───────────────────
@@ -269,28 +308,18 @@ public sealed class MigrationTests : IDisposable
     {
         // Simulate a file written by version 0.0.0.1 (very old).
         WriteIni("version-migration.ini",
-            "[Migration]\nDisplayName = OldName\n__Version = 0.0.0.1");
+            "[__metadata__]\nVersion = 0.0.0.1\nCreatedBy = OldApp\nSavedOn = 2020.01.01\n[Migration]\nDisplayName = OldName");
 
-        Version? storedVersion = null;
-        Version? currentVersion = null;
-
-        // We piggyback on the IAfterLoad pattern rather than building a special interface.
-        // Here we verify the raw value is accessible; real code would do the comparison in OnAfterLoad.
         var section = new MigrationSettingsImpl();
-        IniConfigRegistry.ForFile("version-migration.ini")
+        var config = IniConfigRegistry.ForFile("version-migration.ini")
             .AddSearchPath(_tempDir)
             .RegisterSection<IMigrationSettings>(section)
-            .TrackAssemblyVersion()
+            .EnableMetadata(version: "1.0.0", applicationName: "NewApp")
             .Build();
 
-        var raw = section.GetRawValue("__Version");
-        Version.TryParse(raw, out storedVersion);
-        currentVersion = typeof(IMigrationSettings).Assembly.GetName().Version;
-
-        Assert.NotNull(storedVersion);
-        Assert.NotNull(currentVersion);
-        // The stored 0.0.0.1 should be older than the actual assembly version (which is at least 0.0.0.0).
-        // (We just verify they are both parseable; real comparison would be in OnAfterLoad.)
-        Assert.Equal(new Version(0, 0, 0, 1), storedVersion);
+        // The stored version from the file should be readable via Metadata.
+        Assert.NotNull(config.Metadata);
+        Assert.Equal("0.0.0.1", config.Metadata!.Version);
+        Assert.Equal("OldApp",  config.Metadata.ApplicationName);
     }
 }

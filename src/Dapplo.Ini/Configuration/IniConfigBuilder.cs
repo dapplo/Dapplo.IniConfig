@@ -46,8 +46,8 @@ public sealed class IniConfigBuilder
     // Migration: unknown-key callback (null = no callback)
     private UnknownKeyCallback? _unknownKeyCallback;
 
-    // Migration: track assembly version in the INI file
-    private bool _trackAssemblyVersion;
+    // Migration: optional metadata section config (null = disabled)
+    private IniMetadataConfig? _metadataConfig;
 
     internal IniConfigBuilder(string fileName)
     {
@@ -277,34 +277,45 @@ public sealed class IniConfigBuilder
     }
 
     /// <summary>
-    /// Enables assembly-version tracking.
+    /// Enables the <c>[__metadata__]</c> section.
     /// <para>
-    /// When opted in, the framework writes the <see cref="System.Version"/> of the assembly that
-    /// defines each registered section interface into the INI file under the special key
-    /// <c>__Version</c> every time the file is saved.  On the next load the stored version string
-    /// is made available via <see cref="IIniSection.GetRawValue">GetRawValue("__Version")</see>
-    /// so that an <see cref="Interfaces.IAfterLoad"/> hook can compare it with the current
-    /// assembly version and perform migrations accordingly:
+    /// When opted in, the framework writes a <c>[__metadata__]</c> section as the very first
+    /// section in the INI file on every Save.  The section looks like:
     /// </para>
     /// <code>
-    /// static void OnAfterLoad(IMySettings self)
-    /// {
-    ///     var stored  = Version.TryParse(self.GetRawValue("__Version"), out var v) ? v : new Version(0, 0);
-    ///     var current = typeof(IMySettings).Assembly.GetName().Version!;
-    ///     if (stored &lt; current)
-    ///     {
-    ///         // perform upgrade steps
-    ///     }
-    /// }
+    /// [__metadata__]
+    /// Version = 1.2.0
+    /// CreatedBy = Greenshot
+    /// SavedOn = 12/03/2026 07:43:32
     /// </code>
     /// <para>
-    /// The <c>__Version</c> key is never treated as an "unknown key" and will never trigger
-    /// callbacks registered via <see cref="OnUnknownKey"/>.
+    /// The section is parsed on every load and made available via
+    /// <see cref="IniConfig.Metadata"/>, so that an <see cref="Interfaces.IAfterLoad"/> hook
+    /// can compare the stored version with the current application version and perform
+    /// migration steps accordingly.
+    /// </para>
+    /// <para>
+    /// When <paramref name="version"/> is not specified, the framework uses the version of the
+    /// entry assembly (<see cref="System.Reflection.Assembly.GetEntryAssembly"/>).
+    /// When <paramref name="applicationName"/> is not specified, the entry assembly name is used.
     /// </para>
     /// </summary>
-    public IniConfigBuilder TrackAssemblyVersion()
+    /// <param name="version">
+    /// Optional version string to write (e.g. <c>"1.2.0"</c>).
+    /// Leave <c>null</c> to use the entry assembly's version automatically.
+    /// </param>
+    /// <param name="applicationName">
+    /// Optional application / product name to write as <c>CreatedBy</c>.
+    /// Leave <c>null</c> to use the entry assembly's name automatically.
+    /// </param>
+    public IniConfigBuilder EnableMetadata(string? version = null, string? applicationName = null)
     {
-        _trackAssemblyVersion = true;
+        var entryAssembly = System.Reflection.Assembly.GetEntryAssembly();
+        _metadataConfig = new IniMetadataConfig
+        {
+            Version         = version ?? entryAssembly?.GetName().Version?.ToString(),
+            ApplicationName = applicationName ?? entryAssembly?.GetName().Name,
+        };
         return this;
     }
 
@@ -361,7 +372,7 @@ public sealed class IniConfigBuilder
         config.ValueSources.AddRange(_valueSources);
         config.ValueSourcesAsync.AddRange(_valueSourcesAsync);
         config.UnknownKeyHandler = _unknownKeyCallback;
-        config.TrackAssemblyVersion = _trackAssemblyVersion;
+        config.MetadataConfig = _metadataConfig;
 
         // Seed sections with defaults
         foreach (var kvp in _sections)
@@ -484,7 +495,7 @@ public sealed class IniConfigBuilder
         config.ValueSources.AddRange(_valueSources);
         config.ValueSourcesAsync.AddRange(_valueSourcesAsync);
         config.UnknownKeyHandler = _unknownKeyCallback;
-        config.TrackAssemblyVersion = _trackAssemblyVersion;
+        config.MetadataConfig = _metadataConfig;
 
         // Seed sections with defaults
         foreach (var kvp in _sections)
@@ -596,6 +607,22 @@ public sealed class IniConfigBuilder
 
     private static void ApplyIniFile(IniConfig config, IniFile iniFile)
     {
+        // Read and store the metadata section when it exists in the file.
+        var metaIniSection = iniFile.GetSection(IniConfig.MetadataSectionName);
+        if (metaIniSection != null)
+        {
+            config.Metadata = new IniMetadata
+            {
+                Version         = metaIniSection.GetValue("Version"),
+                ApplicationName = metaIniSection.GetValue("CreatedBy"),
+                SavedOn         = metaIniSection.GetValue("SavedOn"),
+            };
+        }
+        else
+        {
+            config.Metadata = null;
+        }
+
         foreach (var section in config.Sections.Values)
         {
             var iniSection = iniFile.GetSection(section.SectionName);
@@ -604,12 +631,6 @@ public sealed class IniConfigBuilder
             foreach (var entry in iniSection.Entries)
             {
                 section.SetRawValue(entry.Key, entry.Value);
-
-                // The version tracking key is managed by the framework — never raise unknown-key
-                // notifications for it, so that version tracking and unknown-key callbacks can be
-                // used together without __Version appearing in the callback.
-                if (string.Equals(entry.Key, IniConfig.VersionKey, StringComparison.OrdinalIgnoreCase))
-                    continue;
 
                 // Notify listeners when the key is not recognised by the section's interface.
                 if (section is IniSectionBase sectionBase && !sectionBase.IsKnownKey(entry.Key))
