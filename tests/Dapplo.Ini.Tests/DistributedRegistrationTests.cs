@@ -7,9 +7,11 @@ using Dapplo.Ini.Interfaces;
 namespace Dapplo.Ini.Tests;
 
 /// <summary>
-/// Tests for distributed / plugin-style section registrations.
-/// Verifies that sections can be registered on an already-built <see cref="IniConfig"/>
-/// and that they receive the correct layered values (defaults → user file → constants → value sources).
+/// Tests for distributed / plugin-style section registrations using the two-phase pattern:
+///   Phase 1 — <see cref="IniConfigBuilder.Create"/> creates the config (no I/O).
+///   Phase 2 — plugins call <see cref="IniConfig.AddSection{T}"/> (no I/O).
+///   Phase 3 — <see cref="IniConfig.Load"/> / <see cref="IniConfig.LoadAsync"/> reads all
+///              files once for all registered sections.
 /// </summary>
 [Collection("IniConfigRegistry")]
 public sealed class DistributedRegistrationTests : IDisposable
@@ -37,283 +39,271 @@ public sealed class DistributedRegistrationTests : IDisposable
         return path;
     }
 
-    // ── RegisterSection on IniConfig ────────────────────────────────────────────
+    // ── Two-phase: Create + AddSection + Load ───────────────────────────────────
 
     [Fact]
-    public void RegisterSection_AfterBuild_LoadsValuesFromFile()
+    public void CreateThenLoad_WithExistingFile_LoadsValuesForAllSections()
     {
-        WriteIni("plugin.ini", "[General]\nAppName = PluginApp\nMaxRetries = 99");
+        WriteIni("plugin.ini",
+            "[General]\nAppName = HostApp\nMaxRetries = 7\n" +
+            "[UserSettings]\nUsername = alice");
 
+        var hostSection   = new GeneralSettingsImpl();
+        var pluginSection = new UserSettingsImpl();
+
+        // Phase 1 — host creates the config, registers its own section; no I/O yet
         var config = IniConfigRegistry.ForFile("plugin.ini")
             .AddSearchPath(_tempDir)
-            .Build();
+            .RegisterSection<IGeneralSettings>(hostSection)
+            .Create();
 
-        // Simulate a plugin registering its section after the host has already called Build().
-        var pluginSection = new GeneralSettingsImpl();
-        config.RegisterSection<IGeneralSettings>(pluginSection);
+        // Phase 2 — plugin pre-init registers its section; still no I/O
+        config.AddSection<IUserSettings>(pluginSection);
 
-        Assert.Equal("PluginApp", pluginSection.AppName);
-        Assert.Equal(99, pluginSection.MaxRetries);
+        // Phase 3 — single load reads all sections at once
+        config.Load();
+
+        Assert.Equal("HostApp", hostSection.AppName);
+        Assert.Equal(7, hostSection.MaxRetries);
+        Assert.Equal("alice", pluginSection.Username);
     }
 
     [Fact]
-    public void RegisterSection_AfterBuild_UsesDefaults_WhenKeyMissing()
+    public void CreateThenLoad_WithNoFile_UsesDefaults()
     {
-        WriteIni("plugin.ini", "[General]\nAppName = PluginApp");
+        var hostSection   = new GeneralSettingsImpl();
+        var pluginSection = new UserSettingsImpl();
 
-        var config = IniConfigRegistry.ForFile("plugin.ini")
+        var config = IniConfigRegistry.ForFile("nonexistent.ini")
             .AddSearchPath(_tempDir)
-            .Build();
+            .RegisterSection<IGeneralSettings>(hostSection)
+            .Create();
 
-        var pluginSection = new GeneralSettingsImpl();
-        config.RegisterSection<IGeneralSettings>(pluginSection);
+        config.AddSection<IUserSettings>(pluginSection);
+        config.Load();
 
-        // MaxRetries was not in the file — should fall back to the compiled default (42).
-        Assert.Equal("PluginApp", pluginSection.AppName);
-        Assert.Equal(42, pluginSection.MaxRetries);
+        Assert.Equal("MyApp",  hostSection.AppName);
+        Assert.Equal(42,       hostSection.MaxRetries);
+        Assert.Equal("admin",  pluginSection.Username);
     }
 
     [Fact]
-    public void RegisterSection_AfterBuild_ReturnsSection_ForFluentChaining()
-    {
-        WriteIni("plugin.ini", "[General]\nAppName = Chained");
-
-        var config = IniConfigRegistry.ForFile("plugin.ini")
-            .AddSearchPath(_tempDir)
-            .Build();
-
-        var section = config.RegisterSection<IGeneralSettings>(new GeneralSettingsImpl());
-
-        Assert.NotNull(section);
-        Assert.Equal("Chained", section.AppName);
-    }
-
-    [Fact]
-    public void RegisterSection_AfterBuild_AvailableViaGetSection()
-    {
-        WriteIni("plugin.ini", "[General]\nAppName = ViaGet");
-
-        var config = IniConfigRegistry.ForFile("plugin.ini")
-            .AddSearchPath(_tempDir)
-            .Build();
-
-        config.RegisterSection<IGeneralSettings>(new GeneralSettingsImpl());
-
-        var retrieved = config.GetSection<IGeneralSettings>();
-        Assert.Equal("ViaGet", retrieved.AppName);
-    }
-
-    [Fact]
-    public void RegisterSection_AfterBuild_DoesNotMarkSectionDirty()
+    public void CreateThenLoad_DoesNotMarkSectionsDirty()
     {
         WriteIni("plugin.ini", "[General]\nAppName = Clean");
 
         var config = IniConfigRegistry.ForFile("plugin.ini")
             .AddSearchPath(_tempDir)
-            .Build();
+            .RegisterSection<IGeneralSettings>(new GeneralSettingsImpl())
+            .Create();
 
-        config.RegisterSection<IGeneralSettings>(new GeneralSettingsImpl());
+        config.AddSection<IUserSettings>(new UserSettingsImpl());
+        config.Load();
 
-        // Loading should not produce unsaved changes.
         Assert.False(config.HasPendingChanges());
     }
 
     [Fact]
-    public void RegisterSection_AfterBuild_AppliesDefaultFile()
+    public void CreateThenLoad_AppliesDefaultAndConstantFiles()
     {
-        var defaultsPath = WriteIni("defaults.ini", "[General]\nAppName = DefaultApp\nMaxRetries = 5");
+        var defaultsPath  = WriteIni("defaults.ini",  "[General]\nAppName = DefaultApp\nMaxRetries = 5");
+        var constantsPath = WriteIni("constants.ini", "[General]\nAppName = ForcedApp");
         WriteIni("plugin.ini", "[General]\nAppName = UserApp");
 
+        var section = new GeneralSettingsImpl();
         var config = IniConfigRegistry.ForFile("plugin.ini")
             .AddSearchPath(_tempDir)
             .AddDefaultsFile(defaultsPath)
-            .Build();
+            .AddConstantsFile(constantsPath)
+            .RegisterSection<IGeneralSettings>(section)
+            .Create();
 
-        var section = config.RegisterSection<IGeneralSettings>(new GeneralSettingsImpl());
+        config.Load();
 
-        // User file wins over defaults for AppName; MaxRetries comes from defaults.
-        Assert.Equal("UserApp", section.AppName);
+        // Constants win; MaxRetries comes from defaults (user file doesn't have it)
+        Assert.Equal("ForcedApp", section.AppName);
         Assert.Equal(5, section.MaxRetries);
     }
 
     [Fact]
-    public void RegisterSection_AfterBuild_AppliesConstantsFile()
-    {
-        var constantsPath = WriteIni("constants.ini", "[General]\nAppName = ForcedApp");
-        WriteIni("plugin.ini", "[General]\nAppName = UserApp");
-
-        var config = IniConfigRegistry.ForFile("plugin.ini")
-            .AddSearchPath(_tempDir)
-            .AddConstantsFile(constantsPath)
-            .Build();
-
-        var section = config.RegisterSection<IGeneralSettings>(new GeneralSettingsImpl());
-
-        // Constants always win.
-        Assert.Equal("ForcedApp", section.AppName);
-    }
-
-    [Fact]
-    public void RegisterSection_AfterBuild_AppliesValueSource()
+    public void CreateThenLoad_AppliesValueSource()
     {
         WriteIni("plugin.ini", "[General]\nAppName = UserApp");
 
         var source = new DictionaryValueSource();
         source.SetValue("General", "AppName", "SourceApp");
 
+        var section = new GeneralSettingsImpl();
         var config = IniConfigRegistry.ForFile("plugin.ini")
             .AddSearchPath(_tempDir)
             .AddValueSource(source)
-            .Build();
+            .RegisterSection<IGeneralSettings>(section)
+            .Create();
 
-        var section = config.RegisterSection<IGeneralSettings>(new GeneralSettingsImpl());
+        config.Load();
 
         Assert.Equal("SourceApp", section.AppName);
     }
 
     [Fact]
-    public void RegisterSection_AfterBuild_FiresAfterLoadHook()
+    public void CreateThenLoad_FiresAfterLoadHook()
     {
         WriteIni("plugin.ini", "[LifecycleSettings]\nValue = test");
 
+        var section = new LifecycleSettingsImpl();
         var config = IniConfigRegistry.ForFile("plugin.ini")
             .AddSearchPath(_tempDir)
-            .Build();
+            .Create();
 
-        var section = new LifecycleSettingsImpl();
-        config.RegisterSection<ILifecycleSettings>(section);
+        config.AddSection<ILifecycleSettings>(section);
+        config.Load();
 
         Assert.True(section.AfterLoadCalled);
     }
 
     [Fact]
-    public void RegisterSection_WithNoFile_UsesDefaults()
+    public void AddSection_BeforeLoad_ConfigIsReachableViaRegistry()
     {
-        // No INI file exists — section should receive compiled-in defaults.
-        var config = IniConfigRegistry.ForFile("nonexistent.ini")
+        WriteIni("plugin.ini", "[General]\nAppName = Registry");
+
+        // Create registers in the registry immediately (no I/O yet)
+        IniConfigRegistry.ForFile("plugin.ini")
             .AddSearchPath(_tempDir)
-            .Build();
+            .Create();
 
-        var section = config.RegisterSection<IGeneralSettings>(new GeneralSettingsImpl());
+        // Plugin retrieves the config from the registry and adds its section
+        var section = new GeneralSettingsImpl();
+        IniConfigRegistry.Get("plugin.ini").AddSection<IGeneralSettings>(section);
 
-        Assert.Equal("MyApp", section.AppName);
-        Assert.Equal(42, section.MaxRetries);
-        Assert.True(section.EnableLogging);
+        // Then load
+        IniConfigRegistry.Get("plugin.ini").Load();
+
+        Assert.Equal("Registry", section.AppName);
     }
 
-    // ── IniConfigRegistry.RegisterSection convenience overload ─────────────────
+    // ── IniConfigRegistry.AddSection convenience overload ──────────────────────
 
     [Fact]
-    public void RegistryRegisterSection_LoadsValuesFromFile()
+    public void RegistryAddSection_WorksBeforeLoad()
     {
         WriteIni("plugin.ini", "[General]\nAppName = RegistryPlugin");
 
         IniConfigRegistry.ForFile("plugin.ini")
             .AddSearchPath(_tempDir)
-            .Build();
+            .Create();
 
-        var section = IniConfigRegistry.RegisterSection<IGeneralSettings>(
-            "plugin.ini", new GeneralSettingsImpl());
+        // Plugin uses registry convenience method
+        var section = new GeneralSettingsImpl();
+        IniConfigRegistry.AddSection<IGeneralSettings>("plugin.ini", section);
+        IniConfigRegistry.Get("plugin.ini").Load();
 
         Assert.Equal("RegistryPlugin", section.AppName);
     }
 
     [Fact]
-    public void RegistryRegisterSection_ThrowsWhenFileNotRegistered()
+    public void RegistryAddSection_ThrowsWhenFileNotRegistered()
     {
         var ex = Assert.Throws<KeyNotFoundException>(
-            () => IniConfigRegistry.RegisterSection<IGeneralSettings>(
-                "missing.ini", new GeneralSettingsImpl()));
+            () => IniConfigRegistry.AddSection<IGeneralSettings>("missing.ini", new GeneralSettingsImpl()));
 
         Assert.Contains("missing.ini", ex.Message);
     }
 
-    // ── Async overloads ────────────────────────────────────────────────────────
+    // ── AddSection is accessible via GetSection after Load ──────────────────────
 
     [Fact]
-    public async Task RegisterSectionAsync_AfterBuild_LoadsValuesFromFile()
+    public void AddSection_IsAvailableViaGetSection_AfterLoad()
     {
-        WriteIni("plugin.ini", "[General]\nAppName = AsyncPlugin\nMaxRetries = 77");
+        WriteIni("plugin.ini", "[General]\nAppName = ViaGet");
 
         var config = IniConfigRegistry.ForFile("plugin.ini")
             .AddSearchPath(_tempDir)
-            .Build();
+            .Create();
 
-        var section = await config.RegisterSectionAsync<IGeneralSettings>(new GeneralSettingsImpl());
+        config.AddSection<IGeneralSettings>(new GeneralSettingsImpl());
+        config.Load();
 
-        Assert.Equal("AsyncPlugin", section.AppName);
-        Assert.Equal(77, section.MaxRetries);
+        var retrieved = config.GetSection<IGeneralSettings>();
+        Assert.Equal("ViaGet", retrieved.AppName);
+    }
+
+    // ── Async Load ─────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task CreateThenLoadAsync_LoadsValuesForAllSections()
+    {
+        WriteIni("plugin.ini",
+            "[General]\nAppName = AsyncHost\nMaxRetries = 77\n" +
+            "[UserSettings]\nUsername = bob");
+
+        var hostSection   = new GeneralSettingsImpl();
+        var pluginSection = new UserSettingsImpl();
+
+        var config = IniConfigRegistry.ForFile("plugin.ini")
+            .AddSearchPath(_tempDir)
+            .RegisterSection<IGeneralSettings>(hostSection)
+            .Create();
+
+        config.AddSection<IUserSettings>(pluginSection);
+
+        await config.LoadAsync();
+
+        Assert.Equal("AsyncHost", hostSection.AppName);
+        Assert.Equal(77, hostSection.MaxRetries);
+        Assert.Equal("bob", pluginSection.Username);
     }
 
     [Fact]
-    public async Task RegisterSectionAsync_AfterBuild_AppliesAsyncValueSource()
+    public async Task CreateThenLoadAsync_AppliesAsyncValueSource()
     {
         WriteIni("plugin.ini", "[General]\nAppName = UserApp");
 
         var source = new AsyncDictionaryValueSource();
         source.SetValue("General", "AppName", "AsyncSourceApp");
 
+        var section = new GeneralSettingsImpl();
         var config = IniConfigRegistry.ForFile("plugin.ini")
             .AddSearchPath(_tempDir)
             .AddValueSource(source)
-            .Build();
+            .RegisterSection<IGeneralSettings>(section)
+            .Create();
 
-        var section = await config.RegisterSectionAsync<IGeneralSettings>(new GeneralSettingsImpl());
+        await config.LoadAsync();
 
         Assert.Equal("AsyncSourceApp", section.AppName);
     }
 
     [Fact]
-    public async Task RegisterSectionAsync_AfterBuild_FiresAfterLoadAsyncHook()
+    public async Task CreateThenLoadAsync_FiresAfterLoadAsyncHook()
     {
         WriteIni("plugin.ini", "[AsyncLifecycle]\nValue = asynctest");
 
         var config = IniConfigRegistry.ForFile("plugin.ini")
             .AddSearchPath(_tempDir)
-            .Build();
+            .Create();
 
         var section = new AsyncLifecycleSettingsImpl();
-        await config.RegisterSectionAsync<IAsyncLifecycleSettings>(section);
+        config.AddSection<IAsyncLifecycleSettings>(section);
 
-        // The async after-load hook sets AfterLoadAsyncCalled = true.
+        await config.LoadAsync();
+
         Assert.True(section.AfterLoadAsyncCalled);
     }
 
-    [Fact]
-    public async Task RegistryRegisterSectionAsync_LoadsValuesFromFile()
-    {
-        WriteIni("plugin.ini", "[General]\nAppName = AsyncRegistryPlugin");
+    // ── Build() remains unchanged ───────────────────────────────────────────────
 
+    [Fact]
+    public void Build_StillWorksAsBeforeForHostOnlySections()
+    {
+        WriteIni("plugin.ini", "[General]\nAppName = BuiltApp\nMaxRetries = 3");
+
+        var section = new GeneralSettingsImpl();
         IniConfigRegistry.ForFile("plugin.ini")
             .AddSearchPath(_tempDir)
+            .RegisterSection<IGeneralSettings>(section)
             .Build();
 
-        var section = await IniConfigRegistry.RegisterSectionAsync<IGeneralSettings>(
-            "plugin.ini", new GeneralSettingsImpl());
-
-        Assert.Equal("AsyncRegistryPlugin", section.AppName);
-    }
-
-    // ── Multiple plugins sharing the same IniConfig ────────────────────────────
-
-    [Fact]
-    public void RegisterSection_MultipleSections_IndependentRegistration()
-    {
-        WriteIni("shared.ini",
-            "[General]\nAppName = SharedHost\n" +
-            "[UserSettings]\nUsername = shareduser");
-
-        var config = IniConfigRegistry.ForFile("shared.ini")
-            .AddSearchPath(_tempDir)
-            .Build();
-
-        // Plugin A registers General settings
-        var generalSection = config.RegisterSection<IGeneralSettings>(new GeneralSettingsImpl());
-
-        // Plugin B registers User settings
-        var userSection = config.RegisterSection<IUserSettings>(new UserSettingsImpl());
-
-        Assert.Equal("SharedHost", generalSection.AppName);
-        Assert.Equal("shareduser", userSection.Username);
+        Assert.Equal("BuiltApp", section.AppName);
+        Assert.Equal(3, section.MaxRetries);
     }
 }
