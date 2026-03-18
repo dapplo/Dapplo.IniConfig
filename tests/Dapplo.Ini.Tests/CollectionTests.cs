@@ -126,7 +126,8 @@ public sealed class CollectionTests : IDisposable
     [Fact]
     public void Build_WithFile_LoadsDictionaryProperty()
     {
-        WriteIni("coldict.ini", "[Collections]\nStringIntDictionary = a=1,b=2,c=3");
+        // Dictionary<string, int> uses sub-key notation: "PropertyName.key = value"
+        WriteIni("coldict.ini", "[Collections]\nStringIntDictionary.a = 1\nStringIntDictionary.b = 2\nStringIntDictionary.c = 3");
 
         var section = new CollectionSettingsImpl();
         IniConfigRegistry.ForFile("coldict.ini")

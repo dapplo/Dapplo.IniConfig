@@ -257,7 +257,9 @@ public interface ICollectionSettings : IIniSection
     [IniValue(DefaultValue = "red,green,blue")]
     string[]? StringArray { get; set; }
 
-    /// <summary>Dictionary mapping string keys to integer values, e.g. <c>a=1,b=2</c>.</summary>
+    /// <summary>Dictionary mapping string keys to integer values. Stored as sub-keys in the INI file:
+    /// <c>StringIntDictionary.x = 10</c>, <c>StringIntDictionary.y = 20</c>.
+    /// The <see cref="Attributes.IniValueAttribute.DefaultValue"/> uses the inline format <c>key=value,...</c>.</summary>
     [IniValue(DefaultValue = "x=10,y=20")]
     Dictionary<string, int>? StringIntDictionary { get; set; }
 }
