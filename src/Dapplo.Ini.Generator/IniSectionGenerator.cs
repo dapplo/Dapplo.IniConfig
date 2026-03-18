@@ -66,6 +66,12 @@ public sealed class IniSectionGenerator : IIncrementalGenerator
         public bool IsReadOnly { get; set; }
         // True when property type is a value type (needs different nullability handling)
         public bool IsValueType { get; set; }
+        // True when the property is a string-keyed dictionary (Dictionary<string,TV> or IDictionary<string,TV>).
+        // Such properties use dotted sub-key notation in the INI file (e.g. "Config.timeout = 30")
+        // rather than packing all pairs into a single value string.
+        public bool IsSubKeyDictionary { get; set; }
+        // Full C# type name of the dictionary value type (e.g. "int") when IsSubKeyDictionary is true.
+        public string? DictionaryValueTypeFullName { get; set; }
     }
 
     private sealed class SectionModel
@@ -164,6 +170,21 @@ public sealed class IniSectionGenerator : IIncrementalGenerator
                 // of the interface contract.
                 IsReadOnly   = member.SetMethod == null
             };
+
+            // Detect string-keyed dictionaries: Dictionary<string, TV> and IDictionary<string, TV>.
+            // These use dotted sub-key notation in the INI file instead of a packed single value.
+            if (member.Type is INamedTypeSymbol namedMemberType && namedMemberType.IsGenericType)
+            {
+                var originalDefStr = namedMemberType.OriginalDefinition.ToDisplayString();
+                if (namedMemberType.TypeArguments.Length == 2 &&
+                    namedMemberType.TypeArguments[0].SpecialType == SpecialType.System_String &&
+                    (originalDefStr == "System.Collections.Generic.Dictionary<TKey, TValue>" ||
+                     originalDefStr == "System.Collections.Generic.IDictionary<TKey, TValue>"))
+                {
+                    prop.IsSubKeyDictionary = true;
+                    prop.DictionaryValueTypeFullName = namedMemberType.TypeArguments[1].ToDisplayString();
+                }
+            }
 
             // Collect [IniValue] attribute
             var iniValueAttr = member.GetAttributes()
@@ -355,6 +376,14 @@ public sealed class IniSectionGenerator : IIncrementalGenerator
 
             // Backing field
             sb.AppendLine($"        private {p.TypeFullName} {fieldName};");
+            if (p.IsSubKeyDictionary)
+            {
+                // Flag that tracks whether any sub-key from the INI file (or a raw-value set) has
+                // been received since the last ResetToDefaults call.  The first sub-key received
+                // clears the default dictionary before adding the new entry, so file contents
+                // fully replace the compiled defaults (consistent with scalar property behaviour).
+                sb.AppendLine($"        private bool {fieldName}HasRawEntries;");
+            }
             if (usesTx)
                 sb.AppendLine($"        private {p.TypeFullName} {txFieldName}; // transaction pending value");
 
@@ -375,16 +404,35 @@ public sealed class IniSectionGenerator : IIncrementalGenerator
                 sb.AppendLine($"                if (EqualityComparer<{p.TypeFullName}>.Default.Equals({fieldName}, value)) return;");
                 sb.AppendLine($"                PropertyChanging?.Invoke(this, new PropertyChangingEventArgs(nameof({p.Name})));");
             }
-            if (usesTx)
+
+            string keyNameForSet = EscapeString(p.KeyName ?? p.Name);
+            if (p.IsSubKeyDictionary)
+            {
+                // Sub-key dictionary: emit one SetRawValue call per dictionary entry.
+                // The key in the INI file is "PropertyName.dictionaryKey".
+                if (usesTx)
+                {
+                    sb.AppendLine($"                {txFieldName} = value;");
+                    sb.AppendLine($"                if (!_isInTransaction) {{ {fieldName} = value; {fieldName}HasRawEntries = true; if (value != null) foreach (var __kvp in value) SetRawValue($\"{keyNameForSet}.{{__kvp.Key}}\", ConvertToRaw<{p.DictionaryValueTypeFullName}>(__kvp.Value)); }}");
+                }
+                else
+                {
+                    sb.AppendLine($"                {fieldName} = value;");
+                    sb.AppendLine($"                {fieldName}HasRawEntries = true;");
+                    sb.AppendLine($"                if (value != null) foreach (var __kvp in value) SetRawValue($\"{keyNameForSet}.{{__kvp.Key}}\", ConvertToRaw<{p.DictionaryValueTypeFullName}>(__kvp.Value));");
+                }
+            }
+            else if (usesTx)
             {
                 sb.AppendLine($"                {txFieldName} = value;");
-                sb.AppendLine($"                if (!_isInTransaction) {{ {fieldName} = value; SetRawValue(\"{EscapeString(p.KeyName ?? p.Name)}\", ConvertToRaw(value)); }}");
+                sb.AppendLine($"                if (!_isInTransaction) {{ {fieldName} = value; SetRawValue(\"{keyNameForSet}\", ConvertToRaw(value)); }}");
             }
             else
             {
                 sb.AppendLine($"                {fieldName} = value;");
-                sb.AppendLine($"                SetRawValue(\"{EscapeString(p.KeyName ?? p.Name)}\", ConvertToRaw(value));");
+                sb.AppendLine($"                SetRawValue(\"{keyNameForSet}\", ConvertToRaw(value));");
             }
+
             if (p.NotifyPropertyChanged)
             {
                 sb.AppendLine($"                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof({p.Name})));");
@@ -404,9 +452,16 @@ public sealed class IniSectionGenerator : IIncrementalGenerator
         foreach (var p in m.Properties)
         {
             string fieldName = $"_{Camel(p.Name)}";
+            if (p.IsSubKeyDictionary)
+            {
+                // Reset the "file-has-overridden-defaults" flag so the next sub-key load
+                // starts fresh (clears the defaults before applying the file entries).
+                sb.AppendLine($"            {fieldName}HasRawEntries = false;");
+            }
             if (p.DefaultValue != null)
             {
-                // Store default as raw and let converter parse it
+                // Sub-key dictionaries parse their default the same way (inline format for the
+                // default string is fine — only the INI file storage uses sub-key notation).
                 sb.AppendLine($"            {fieldName} = ConvertFromRaw<{p.TypeFullName}>(\"{EscapeString(p.DefaultValue)}\");");
             }
             else
@@ -426,9 +481,22 @@ public sealed class IniSectionGenerator : IIncrementalGenerator
         {
             string keyName = (p.KeyName ?? p.Name).ToLowerInvariant();
             string fieldName = $"_{Camel(p.Name)}";
-            sb.AppendLine($"                case \"{EscapeString(keyName)}\":");
-            sb.AppendLine($"                    {fieldName} = ConvertFromRaw<{p.TypeFullName}>(rawValue);");
-            sb.AppendLine("                    break;");
+            if (p.IsSubKeyDictionary)
+            {
+                // Sub-key pattern: "propertyname.subkey"
+                sb.AppendLine($"                case var __sk when __sk.StartsWith(\"{EscapeString(keyName)}.\"):");
+                // First sub-key clears the compiled defaults so file data fully replaces them.
+                sb.AppendLine($"                    if (!{fieldName}HasRawEntries) {{ {fieldName} = new System.Collections.Generic.Dictionary<string, {p.DictionaryValueTypeFullName}>(System.StringComparer.OrdinalIgnoreCase); {fieldName}HasRawEntries = true; }}");
+                sb.AppendLine($"                    if ({fieldName} == null) {fieldName} = new System.Collections.Generic.Dictionary<string, {p.DictionaryValueTypeFullName}>(System.StringComparer.OrdinalIgnoreCase);");
+                sb.AppendLine($"                    {fieldName}[key.Substring({keyName.Length + 1})] = ConvertFromRaw<{p.DictionaryValueTypeFullName}>(rawValue);");
+                sb.AppendLine("                    break;");
+            }
+            else
+            {
+                sb.AppendLine($"                case \"{EscapeString(keyName)}\":");
+                sb.AppendLine($"                    {fieldName} = ConvertFromRaw<{p.TypeFullName}>(rawValue);");
+                sb.AppendLine("                    break;");
+            }
         }
         sb.AppendLine("            }");
         sb.AppendLine("        }");
@@ -442,7 +510,10 @@ public sealed class IniSectionGenerator : IIncrementalGenerator
         foreach (var p in m.Properties)
         {
             string keyName = (p.KeyName ?? p.Name).ToLowerInvariant();
-            sb.AppendLine($"                case \"{EscapeString(keyName)}\": return true;");
+            if (p.IsSubKeyDictionary)
+                sb.AppendLine($"                case var __k when __k.StartsWith(\"{EscapeString(keyName)}.\"):  return true;");
+            else
+                sb.AppendLine($"                case \"{EscapeString(keyName)}\": return true;");
         }
         sb.AppendLine("                default: return false;");
         sb.AppendLine("            }");
@@ -457,7 +528,17 @@ public sealed class IniSectionGenerator : IIncrementalGenerator
             if (p.IsReadOnly) continue;
             string fieldName = $"_{Camel(p.Name)}";
             string keyName = p.KeyName ?? p.Name;
-            sb.AppendLine($"            yield return new KeyValuePair<string, string?>(\"{EscapeString(keyName)}\", ConvertToRaw({fieldName}));");
+            if (p.IsSubKeyDictionary)
+            {
+                // Yield one entry per key in the dictionary, using "PropertyName.key" as the INI key.
+                sb.AppendLine($"            if ({fieldName} != null)");
+                sb.AppendLine($"                foreach (var __kvp in {fieldName})");
+                sb.AppendLine($"                    yield return new KeyValuePair<string, string?>($\"{EscapeString(keyName)}.{{__kvp.Key}}\", ConvertToRaw<{p.DictionaryValueTypeFullName}>(__kvp.Value));");
+            }
+            else
+            {
+                sb.AppendLine($"            yield return new KeyValuePair<string, string?>(\"{EscapeString(keyName)}\", ConvertToRaw({fieldName}));");
+            }
         }
         sb.AppendLine("        }");
         sb.AppendLine();
