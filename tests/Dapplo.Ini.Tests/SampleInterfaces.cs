@@ -347,7 +347,8 @@ public interface IStandardAttributeSettings : IIniSection
 }
 
 /// <summary>
-/// Section that uses DataAnnotations validation attributes ([Required], [Range], [MaxLength]).
+/// Section that uses DataAnnotations validation attributes ([Required], [Range], [MaxLength],
+/// [RegularExpression]).
 /// Validation errors are surfaced via INotifyDataErrorInfo without any exception being thrown.
 /// </summary>
 [IniSection("AnnotatedSection")]
@@ -364,6 +365,10 @@ public interface IAnnotatedSettings : IIniSection
     /// <summary>String whose length must not exceed 20 characters.</summary>
     [MaxLength(20, ErrorMessage = "Tag must not exceed 20 characters.")]
     string? Tag { get; set; }
+
+    /// <summary>String that must match a simple alphanumeric pattern.</summary>
+    [RegularExpression(@"^[a-zA-Z0-9]+$", ErrorMessage = "Code must be alphanumeric.")]
+    string? Code { get; set; }
 }
 
 /// <summary>

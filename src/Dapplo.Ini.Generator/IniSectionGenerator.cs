@@ -29,6 +29,7 @@ public sealed class IniSectionGenerator : IIncrementalGenerator
     private const string RequiredAttributeFqn        = "System.ComponentModel.DataAnnotations.RequiredAttribute";
     private const string RangeAttributeFqn           = "System.ComponentModel.DataAnnotations.RangeAttribute";
     private const string MaxLengthAttributeFqn       = "System.ComponentModel.DataAnnotations.MaxLengthAttribute";
+    private const string RegularExpressionAttributeFqn = "System.ComponentModel.DataAnnotations.RegularExpressionAttribute";
 
     // FQNs used for non-generic (dispatch) lifecycle interfaces
     private const string IAfterLoadFqn        = "Dapplo.Ini.Interfaces.IAfterLoad";
@@ -92,8 +93,10 @@ public sealed class IniSectionGenerator : IIncrementalGenerator
         public string? RangeErrorMessage { get; set; }
         public int? MaxLength { get; set; }
         public string? MaxLengthErrorMessage { get; set; }
+        public string? RegexPattern { get; set; }
+        public string? RegexErrorMessage { get; set; }
         // Convenience: true when any DataAnnotations validation attributes are present
-        public bool HasValidationAttributes => IsRequired || RangeMinRaw != null || MaxLength.HasValue;
+        public bool HasValidationAttributes => IsRequired || RangeMinRaw != null || MaxLength.HasValue || RegexPattern != null;
     }
 
     private sealed class SectionModel
@@ -331,6 +334,18 @@ public sealed class IniSectionGenerator : IIncrementalGenerator
                 foreach (var na in maxLengthAttr.NamedArguments)
                     if (na.Key == "ErrorMessage" && na.Value.Value is string em)
                         prop.MaxLengthErrorMessage = em;
+            }
+
+            // [RegularExpression(pattern)]
+            var regexAttr = member.GetAttributes()
+                .FirstOrDefault(a => a.AttributeClass?.ToDisplayString() == RegularExpressionAttributeFqn);
+            if (regexAttr != null && regexAttr.ConstructorArguments.Length > 0 &&
+                regexAttr.ConstructorArguments[0].Value is string pattern)
+            {
+                prop.RegexPattern = pattern;
+                foreach (var na in regexAttr.NamedArguments)
+                    if (na.Key == "ErrorMessage" && na.Value.Value is string em)
+                        prop.RegexErrorMessage = em;
             }
 
             properties.Add(prop);
@@ -838,6 +853,12 @@ public sealed class IniSectionGenerator : IIncrementalGenerator
                 {
                     string maxLenMsg = EscapeString(p.MaxLengthErrorMessage ?? $"{p.Name} must not exceed {p.MaxLength.Value} characters.");
                     sb.AppendLine($"                    if ({fieldName} != null && {fieldName}.Length > {p.MaxLength.Value}) yield return \"{maxLenMsg}\";");
+                }
+                if (p.RegexPattern != null)
+                {
+                    string regexMsg = EscapeString(p.RegexErrorMessage ?? $"{p.Name} does not match the required pattern.");
+                    string escapedPattern = EscapeString(p.RegexPattern);
+                    sb.AppendLine($"                    if ({fieldName} != null && !System.Text.RegularExpressions.Regex.IsMatch({fieldName}, \"{escapedPattern}\")) yield return \"{regexMsg}\";");
                 }
                 sb.AppendLine("                    break;");
             }

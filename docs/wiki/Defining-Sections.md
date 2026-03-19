@@ -145,9 +145,85 @@ code in a separate file — see [[Lifecycle-Hooks#legacy-partial-class-pattern]]
 
 ---
 
+## Standard .NET attribute support
+
+The source generator also honours several standard .NET attributes as
+convenient alternatives to `[IniSection]` and `[IniValue]`.  **`[IniValue]`
+always takes precedence** — standard attributes are used only as fallbacks
+when the `[IniValue]` equivalent is not specified.
+
+### Metadata attributes (section & property)
+
+| Standard attribute | Equivalent `[IniValue]` / `[IniSection]` field | Notes |
+|---|---|---|
+| `[Description("...")]` on interface | `[IniSection(Description = "...")]` | Sets the section comment |
+| `[Description("...")]` on property | `[IniValue(Description = "...")]` | Sets the key comment |
+| `[DefaultValue(value)]` on property | `[IniValue(DefaultValue = "...")]` | Accepts any value type; converted to string internally |
+| `[DataMember(Name = "...")]` on property | `[IniValue(KeyName = "...")]` | Sets the INI key name |
+
+### Exclusion attribute
+
+| Standard attribute | Effect |
+|---|---|
+| `[IgnoreDataMember]` on property | Property is excluded from all INI read/write operations. The backing field and the property itself are still generated so the interface contract is satisfied. |
+
+```csharp
+[IniSection("UserProfile")]
+[Description("User profile settings")]        // sets section comment
+public interface IUserProfileSettings : IIniSection
+{
+    [DataMember(Name = "display_name")]        // INI key is "display_name"
+    [DefaultValue("Anonymous")]                // default value
+    [Description("The user's display name")]   // written as a comment
+    string? DisplayName { get; set; }
+
+    [DefaultValue(3)]                          // numeric default
+    int LoginAttempts { get; set; }
+
+    [IgnoreDataMember]                         // never written to or read from the file
+    string? SessionToken { get; set; }
+}
+```
+
+### Validation attributes (DataAnnotations)
+
+Place `System.ComponentModel.DataAnnotations` attributes on properties to
+have the source generator emit inline validation code.  See [[Validation]]
+for the full attribute reference and examples of how to consume the
+`INotifyDataErrorInfo` errors.
+
+| Attribute | What is checked |
+|---|---|
+| `[Required]` | null / empty string |
+| `[Range(min, max)]` | numeric (or `IComparable`) range |
+| `[MaxLength(n)]` | string length |
+| `[RegularExpression(pattern)]` | regex match |
+
+All attributes support an `ErrorMessage` property to override the default message.
+
+```csharp
+[IniSection("App")]
+public interface IAppSettings : IIniSection
+{
+    [Required]
+    string? Name { get; set; }
+
+    [Range(1024, 65535, ErrorMessage = "Port must be between 1024 and 65535.")]
+    int Port { get; set; }
+
+    [MaxLength(100)]
+    string? Description { get; set; }
+
+    [RegularExpression(@"^[a-z0-9_-]+$", ErrorMessage = "Slug must be lowercase alphanumeric.")]
+    string? Slug { get; set; }
+}
+```
+
+---
+
 ## See also
 
 - [[Lifecycle-Hooks]] — `IAfterLoad`, `IBeforeSave`, `IAfterSave`
-- [[Validation]] — `IDataValidation<TSelf>` for WPF/Avalonia binding validation
+- [[Validation]] — `IDataValidation<TSelf>`, DataAnnotations attributes, and `INotifyDataErrorInfo`
 - [[Transactional-Updates]] — `ITransactional` for atomic updates
 - [[Value-Converters]] — supported property types and custom converters

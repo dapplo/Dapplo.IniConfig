@@ -393,4 +393,51 @@ public sealed class StandardAttributeTests : IDisposable
         Assert.Null(ex);
         Assert.True(((INotifyDataErrorInfo)section).HasErrors);
     }
+
+    // ── [RegularExpression] validation ────────────────────────────────────────
+
+    [Fact]
+    public void RegularExpression_InvalidValue_HasErrors()
+    {
+        var section = new AnnotatedSettingsImpl();
+        IniConfigRegistry.ForFile("regex_invalid.ini")
+            .AddSearchPath(_tempDir)
+            .RegisterSection<IAnnotatedSettings>(section)
+            .Build();
+
+        section.Code = "hello world!"; // contains space and '!' — not alphanumeric
+        var errors = ((INotifyDataErrorInfo)section)
+            .GetErrors(nameof(IAnnotatedSettings.Code)).Cast<string>().ToList();
+        Assert.NotEmpty(errors);
+        Assert.Contains("Code must be alphanumeric.", errors);
+    }
+
+    [Fact]
+    public void RegularExpression_ValidValue_HasNoErrors()
+    {
+        var section = new AnnotatedSettingsImpl();
+        IniConfigRegistry.ForFile("regex_valid.ini")
+            .AddSearchPath(_tempDir)
+            .RegisterSection<IAnnotatedSettings>(section)
+            .Build();
+
+        section.Code = "ABC123"; // valid alphanumeric
+        Assert.Empty(((INotifyDataErrorInfo)section)
+            .GetErrors(nameof(IAnnotatedSettings.Code)).Cast<string>());
+    }
+
+    [Fact]
+    public void RegularExpression_NullValue_HasNoErrors()
+    {
+        // A null value is not matched — skip the check (no false positive)
+        var section = new AnnotatedSettingsImpl();
+        IniConfigRegistry.ForFile("regex_null.ini")
+            .AddSearchPath(_tempDir)
+            .RegisterSection<IAnnotatedSettings>(section)
+            .Build();
+
+        section.Code = null;
+        Assert.Empty(((INotifyDataErrorInfo)section)
+            .GetErrors(nameof(IAnnotatedSettings.Code)).Cast<string>());
+    }
 }
