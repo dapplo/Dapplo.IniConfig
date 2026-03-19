@@ -277,9 +277,25 @@ public partial class SettingsWindow : Window
 
 > **Why `ServerSettingsImpl` and not `IServerSettings`?**
 > `RunAllValidations()` is a generated method on the concrete implementation class,
-> not part of the section interface.  In typical DI setups the interface is registered
-> against the concrete instance, so you can obtain the concrete type from the DI
-> container or store it separately at registration time.
+> not part of the section interface.  There are two idiomatic ways to obtain it:
+>
+> **Option 1 — hold the reference at registration time** (simplest):
+> ```csharp
+> var settingsImpl = new ServerSettingsImpl();
+> var config = IniConfigRegistry.ForFile("myapp.ini")
+>     .RegisterSection<IServerSettings>(settingsImpl)
+>     .Build();
+> // Store settingsImpl in your DI container / service locator alongside IServerSettings
+> services.AddSingleton<IServerSettings>(settingsImpl);
+> services.AddSingleton<ServerSettingsImpl>(settingsImpl); // same instance!
+> ```
+>
+> **Option 2 — cast from the interface** (when you only have `IServerSettings`):
+> ```csharp
+> var section = config.GetSection<IServerSettings>();
+> if (section is ServerSettingsImpl impl)
+>     impl.RunAllValidations();
+> ```
 
 ### Calling `RunAllValidations()` explicitly in lifecycle hooks
 
