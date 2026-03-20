@@ -22,21 +22,18 @@ public abstract class LanguageSectionBase : ILanguageSection, IReadOnlyDictionar
     // ── ILanguageSection ──────────────────────────────────────────────────────
 
     /// <summary>
-    /// Optional section name used for file naming and section routing within a
-    /// full <c>.ini</c> file.
-    /// <list type="bullet">
-    ///   <item>Dedicated file: <c>{basename}.{sectionName}.{ietf}.ini</c></item>
-    ///   <item>Fallback: <c>[sectionName]</c> section in <c>{basename}.{ietf}.ini</c></item>
-    /// </list>
-    /// Returns <c>null</c> when the section reads from the main file (no section filter).
+    /// The <c>[SectionName]</c> header used to locate translations in the language file.
+    /// Set by the source generator from <see cref="Attributes.IniLanguageSectionAttribute.SectionName"/>
+    /// (or derived from the interface name when no explicit name is given).
     /// </summary>
-    public abstract string? SectionName { get; }
+    public abstract string SectionName { get; }
 
     /// <summary>
-    /// Obsolete: use <see cref="SectionName"/> instead.
+    /// Optional module name used in the file naming convention.
+    /// When non-<c>null</c> the loader reads from <c>{basename}.{moduleName}.{ietf}.ini</c>;
+    /// when <c>null</c> the loader reads from <c>{basename}.{ietf}.ini</c>.
     /// </summary>
-    [Obsolete("Use SectionName instead.")]
-    public string? ModuleName => SectionName;
+    public abstract string? ModuleName { get; }
 
     // ── Internal helpers used by LanguageConfig ───────────────────────────────
 

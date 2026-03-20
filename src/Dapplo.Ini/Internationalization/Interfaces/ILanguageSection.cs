@@ -11,11 +11,20 @@ namespace Dapplo.Ini.Internationalization.Interfaces;
 public interface ILanguageSection
 {
     /// <summary>
-    /// Optional section name used for file naming and section routing.
-    /// Corresponds to <see cref="Attributes.IniLanguageSectionAttribute.SectionName"/>.
-    /// <c>null</c> when no section name was specified.
+    /// The <c>[SectionName]</c> header that must be present in the language file.
+    /// Corresponds to <see cref="Attributes.IniLanguageSectionAttribute.SectionName"/>,
+    /// or the interface name with the leading <c>I</c> stripped when no explicit name is given.
     /// </summary>
-    string? SectionName { get; }
+    string SectionName { get; }
+
+    /// <summary>
+    /// Optional module name used in the file naming convention.
+    /// Corresponds to <see cref="Attributes.IniLanguageSectionAttribute.ModuleName"/>.
+    /// When set, the file is <c>{basename}.{moduleName}.{ietf}.ini</c>;
+    /// when <c>null</c>, the file is <c>{basename}.{ietf}.ini</c>.
+    /// </summary>
+    string? ModuleName { get; }
 }
+
 
 

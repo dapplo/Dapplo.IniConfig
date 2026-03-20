@@ -11,19 +11,32 @@ namespace Dapplo.Ini.Internationalization.Configuration;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Language files are standard <c>.ini</c> files and may contain <c>[SectionName]</c> headers.
-/// The file naming convention is:
+/// Language files are standard <c>.ini</c> files. Every translation key
+/// <strong>must</strong> be inside a <c>[SectionName]</c> block — keys outside any
+/// section header are silently ignored.
+/// </para>
+/// <para>
+/// File naming is controlled by two separate concerns:
 /// </para>
 /// <list type="bullet">
-///   <item><c>{basename}.{ietf}.ini</c> — for sections without a section name.</item>
 ///   <item>
-///     <c>{basename}.{sectionName}.{ietf}.ini</c> — optional dedicated file for a named section;
-///     when this file is missing the loader reads the <c>[sectionName]</c> section from the main
-///     <c>{basename}.{ietf}.ini</c> file instead.
+///     <term>File selection</term>
+///     <description>
+///     Determined by <see cref="LanguageSectionBase.ModuleName"/>:
+///     <c>null</c> → <c>{basename}.{ietf}.ini</c>;
+///     non-null → <c>{basename}.{moduleName}.{ietf}.ini</c>.
+///     </description>
+///   </item>
+///   <item>
+///     <term>Section routing</term>
+///     <description>
+///     Determined by <see cref="LanguageSectionBase.SectionName"/>:
+///     only keys inside the matching <c>[SectionName]</c> block are loaded.
+///     </description>
 ///   </item>
 /// </list>
 /// <para>
-/// Values support escape sequences: <c>\n</c> \u2192 newline, <c>\t</c> \u2192 tab, <c>\\</c> \u2192 backslash.
+/// Values support escape sequences: <c>\n</c> → newline, <c>\t</c> → tab, <c>\\</c> → backslash.
 /// Keys are normalized: trimmed, underscores and dashes removed, lowercased.
 /// </para>
 /// <para>
@@ -293,79 +306,67 @@ public sealed class LanguageConfig : IDisposable
 
     /// <summary>
     /// Loads translations for one IETF tag into a section.
-    /// When <see cref="LanguageSectionBase.SectionName"/> is non-null:
-    ///   (1) tries the dedicated file <c>{basename}.{sectionName}.{ietf}.ini</c> (all keys),
-    ///   (2) falls back to the main file with a <c>[sectionName]</c> section filter.
-    /// When <see cref="LanguageSectionBase.SectionName"/> is null:
-    ///   reads all keys from <c>{basename}.{ietf}.ini</c>.
+    /// Uses <see cref="LanguageSectionBase.ModuleName"/> to select the file and
+    /// <see cref="LanguageSectionBase.SectionName"/> to select the section within that file.
     /// </summary>
     private void LoadIetfIntoSection(LanguageSectionBase section, string directory, string ietf)
     {
-        foreach (var (filePath, sectionFilter) in ResolveLanguageFiles(directory, section.SectionName, ietf))
-        {
-            var content = File.ReadAllText(filePath, Encoding.UTF8);
-            ParseAndApply(section, content, sectionFilter);
-        }
+        var filePath = ResolveLanguageFilePath(directory, section.ModuleName, ietf);
+        if (filePath == null) return;
+
+        var content = File.ReadAllText(filePath, Encoding.UTF8);
+        ParseAndApply(section, content, section.SectionName);
     }
 
     private async Task LoadIetfIntoSectionAsync(
         LanguageSectionBase section, string directory, string ietf, CancellationToken cancellationToken)
     {
-        foreach (var (filePath, sectionFilter) in ResolveLanguageFiles(directory, section.SectionName, ietf))
-        {
-            string content;
+        var filePath = ResolveLanguageFilePath(directory, section.ModuleName, ietf);
+        if (filePath == null) return;
+
+        string content;
 #if NET
-            content = await File.ReadAllTextAsync(filePath, Encoding.UTF8, cancellationToken).ConfigureAwait(false);
+        content = await File.ReadAllTextAsync(filePath, Encoding.UTF8, cancellationToken).ConfigureAwait(false);
 #else
-            using var reader = new StreamReader(filePath, Encoding.UTF8);
-            content = await reader.ReadToEndAsync().ConfigureAwait(false);
+        using var reader = new StreamReader(filePath, Encoding.UTF8);
+        content = await reader.ReadToEndAsync().ConfigureAwait(false);
 #endif
-            ParseAndApply(section, content, sectionFilter);
-        }
+        ParseAndApply(section, content, section.SectionName);
     }
 
     /// <summary>
-    /// Resolves the file(s) and optional section filter for one IETF tag.
+    /// Returns the path of the language file for the given IETF tag, or <c>null</c>
+    /// when no matching file exists.
     /// </summary>
-    private IEnumerable<(string FilePath, string? SectionFilter)> ResolveLanguageFiles(
-        string directory, string? sectionName, string ietf)
+    /// <param name="directory">Search directory.</param>
+    /// <param name="moduleName">
+    /// Optional module name: when set the file is <c>{basename}.{moduleName}.{ietf}.ini</c>;
+    /// when <c>null</c> the file is <c>{basename}.{ietf}.ini</c>.
+    /// </param>
+    /// <param name="ietf">IETF language tag.</param>
+    private string? ResolveLanguageFilePath(string directory, string? moduleName, string ietf)
     {
-        if (!string.IsNullOrEmpty(sectionName))
-        {
-            // Try dedicated file first (no section filter needed).
-            var dedicatedFile = Path.Combine(directory, $"{_basename}.{sectionName}.{ietf}.ini");
-            if (File.Exists(dedicatedFile))
-            {
-                yield return (dedicatedFile, null);
-                yield break;
-            }
+        var fileName = moduleName != null
+            ? $"{_basename}.{moduleName}.{ietf}.ini"
+            : $"{_basename}.{ietf}.ini";
 
-            // Fall back to main file, reading only [sectionName] block.
-            var mainFile = Path.Combine(directory, $"{_basename}.{ietf}.ini");
-            if (File.Exists(mainFile))
-                yield return (mainFile, sectionName);
-        }
-        else
-        {
-            // No section name: load main file, all keys.
-            var mainFile = Path.Combine(directory, $"{_basename}.{ietf}.ini");
-            if (File.Exists(mainFile))
-                yield return (mainFile, null);
-        }
+        var path = Path.Combine(directory, fileName);
+        return File.Exists(path) ? path : null;
     }
 
     /// <summary>
     /// Parses a full <c>.ini</c> file and applies matching key=value entries to the section.
+    /// Only keys inside the <c>[<paramref name="sectionName"/>]</c> block are read.
+    /// Keys outside any section header (or in a different section) are silently ignored.
     /// </summary>
     /// <param name="section">Target section.</param>
     /// <param name="content">Raw file content.</param>
-    /// <param name="sectionFilter">
-    /// When non-null, only keys inside the matching <c>[sectionFilter]</c> block are read.
-    /// When null, all keys are read (section headers act as no-ops).
+    /// <param name="sectionName">
+    /// The section header to match. Only keys inside this section are loaded.
     /// </param>
-    private static void ParseAndApply(LanguageSectionBase section, string content, string? sectionFilter = null)
+    private static void ParseAndApply(LanguageSectionBase section, string content, string sectionName)
     {
-        bool inScope = sectionFilter == null;
+        bool inScope = false;  // keys outside sections are never in scope
 
         var span = content.AsSpan();
         while (!span.IsEmpty)
@@ -383,8 +384,7 @@ public sealed class LanguageConfig : IDisposable
                 if (closeIdx > 1)
                 {
                     var header = line.Slice(1, closeIdx - 1).Trim().ToString();
-                    inScope = sectionFilter == null
-                        || string.Equals(header, sectionFilter, StringComparison.OrdinalIgnoreCase);
+                    inScope = string.Equals(header, sectionName, StringComparison.OrdinalIgnoreCase);
                 }
                 continue;
             }

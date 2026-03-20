@@ -7,7 +7,9 @@ using Dapplo.Ini.Internationalization.Interfaces;
 namespace Dapplo.Ini.Internationalization.Tests;
 
 /// <summary>
-/// Base language section (no section name → file: testapp.{ietf}.ini, all keys).
+/// Base language section.
+/// No explicit section name → SectionName derived from interface = "MainLanguage".
+/// No ModuleName → file is <c>testapp.{ietf}.ini</c>, reads <c>[MainLanguage]</c> block.
 /// Does NOT extend ILanguageSection to verify that is optional.
 /// </summary>
 [IniLanguageSection]
@@ -23,8 +25,7 @@ public interface IMainLanguage
 }
 
 /// <summary>
-/// Module-specific language section (section name = "core").
-/// Dedicated file: testapp.core.{ietf}.ini — OR [core] section inside testapp.{ietf}.ini.
+/// Named section "core" — reads the <c>[core]</c> block from <c>testapp.{ietf}.ini</c> (no module file).
 /// Optionally extends ILanguageSection to show it still works when present.
 /// </summary>
 [IniLanguageSection("core")]
@@ -36,7 +37,8 @@ public interface ICoreLanguage : ILanguageSection
 
 /// <summary>
 /// Language section whose interface also extends IReadOnlyDictionary so the dynamic
-/// indexer can be used. Does NOT extend ILanguageSection.
+/// indexer can be used.
+/// SectionName derived = "DictionaryLanguage", reads <c>[DictionaryLanguage]</c> from main file.
 /// </summary>
 [IniLanguageSection]
 public interface IDictionaryLanguage : IReadOnlyDictionary<string, string>
@@ -45,15 +47,18 @@ public interface IDictionaryLanguage : IReadOnlyDictionary<string, string>
 }
 
 /// <summary>
-/// Simulates a plugin-provided language section (same section name as ICoreLanguage).
-/// Used to verify that a module can be loaded from the [core] section in the main file
-/// (no dedicated file needed).
+/// Plugin / module language section.
+/// SectionName = "core" (explicit), ModuleName = "core" → reads <c>[core]</c> from
+/// <c>testapp.core.{ietf}.ini</c>.
+/// Demonstrates the separate file selection (<see cref="IniLanguageSectionAttribute.ModuleName"/>)
+/// and section routing (<see cref="IniLanguageSectionAttribute.SectionName"/>) concerns.
 /// </summary>
-[IniLanguageSection("core")]
+[IniLanguageSection("core", ModuleName = "core")]
 public interface IPluginLanguage
 {
     string CoreTitle { get; }
     string CoreStatus { get; }
 }
+
 
 

@@ -55,6 +55,9 @@ public sealed class IniLanguageSectionGenerator : IIncrementalGenerator
         public string Namespace { get; set; } = "";
         public string InterfaceName { get; set; } = "";
         public string GeneratedClassName { get; set; } = "";
+        /// <summary>The [SectionName] header used in the ini file. Always non-null (derived from interface name if not explicit).</summary>
+        public string SectionName { get; set; } = "";
+        /// <summary>Optional module name for file naming: {basename}.{moduleName}.{ietf}.ini.</summary>
         public string? ModuleName { get; set; }
         /// <summary>True when the interface also extends IReadOnlyDictionary&lt;string,string&gt;.</summary>
         public bool ImplementsReadOnlyDictionary { get; set; }
@@ -79,16 +82,29 @@ public sealed class IniLanguageSectionGenerator : IIncrementalGenerator
             ? ""
             : symbol.ContainingNamespace.ToDisplayString();
 
-        // Read optional SectionName from attribute constructor argument
-        string? moduleName = null;
+        // Read optional SectionName from attribute constructor argument (first positional arg)
+        string? explicitSectionName = null;
         if (attr.ConstructorArguments.Length > 0 &&
-            attr.ConstructorArguments[0].Value is string mn &&
-            !string.IsNullOrEmpty(mn))
-            moduleName = mn;
+            attr.ConstructorArguments[0].Value is string sn &&
+            !string.IsNullOrEmpty(sn))
+            explicitSectionName = sn;
 
-        // Also check named argument (in case the user wrote [IniLanguageSection(SectionName = "x")])
+        // Also check named argument for SectionName
         foreach (var na in attr.NamedArguments)
-            if ((na.Key == "SectionName" || na.Key == "ModuleName") && na.Value.Value is string mnNamed)
+            if (na.Key == "SectionName" && na.Value.Value is string snNamed)
+                explicitSectionName = snNamed;
+
+        // Derive section name from interface name when not explicitly provided
+        // (strip leading 'I' prefix, e.g. IMainLanguage → MainLanguage)
+        var derivedSectionName = interfaceName.Length > 1 && interfaceName[0] == 'I'
+            ? interfaceName.Substring(1)
+            : interfaceName;
+        var sectionName = explicitSectionName ?? derivedSectionName;
+
+        // Read optional ModuleName from named attribute argument (controls file naming)
+        string? moduleName = null;
+        foreach (var na in attr.NamedArguments)
+            if (na.Key == "ModuleName" && na.Value.Value is string mnNamed)
                 moduleName = mnNamed;
 
         // Check whether the interface extends IReadOnlyDictionary<string, string>
@@ -104,6 +120,7 @@ public sealed class IniLanguageSectionGenerator : IIncrementalGenerator
             Namespace                 = namespaceName,
             InterfaceName             = interfaceName,
             GeneratedClassName        = $"{(interfaceName.StartsWith("I") && interfaceName.Length > 1 ? interfaceName.Substring(1) : interfaceName)}Impl",
+            SectionName               = sectionName,
             ModuleName                = moduleName,
             ImplementsReadOnlyDictionary = implementsReadOnlyDictionary,
             Properties                = properties
@@ -189,11 +206,14 @@ public sealed class IniLanguageSectionGenerator : IIncrementalGenerator
         sb.AppendLine($"    public sealed partial class {m.GeneratedClassName} : {baseClasses}");
         sb.AppendLine("    {");
 
-        // ModuleName override → renamed to SectionName
+        // SectionName override (always non-null: explicit or derived from interface name)
+        sb.AppendLine($"        public override string SectionName => \"{EscapeString(m.SectionName)}\";");
+
+        // ModuleName override (null when no module file is needed)
         var moduleExpr = m.ModuleName != null
             ? $"\"{EscapeString(m.ModuleName)}\""
             : "null";
-        sb.AppendLine($"        public override string? SectionName => {moduleExpr};");
+        sb.AppendLine($"        public override string? ModuleName => {moduleExpr};");
         sb.AppendLine();
 
         // Generate one property per string property declared on the interface

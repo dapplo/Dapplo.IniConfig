@@ -20,7 +20,7 @@ public sealed class LanguageConfigTests
     public void Build_BaseLanguage_LoadsTranslations()
     {
         var section = new MainLanguageImpl();
-        using var config = LanguageConfigBuilder.Create("testapp")
+        using var config = LanguageConfigBuilder.ForBasename("testapp")
             .WithDirectory(LangDir)
             .WithBaseLanguage("en-US")
             .AddSection<IMainLanguage>(section)
@@ -39,7 +39,7 @@ public sealed class LanguageConfigTests
     {
         // Save_Button in the file should match property "SaveButton"
         var section = new MainLanguageImpl();
-        using var config = LanguageConfigBuilder.Create("testapp")
+        using var config = LanguageConfigBuilder.ForBasename("testapp")
             .WithDirectory(LangDir)
             .WithBaseLanguage("en-US")
             .AddSection<IMainLanguage>(section)
@@ -55,7 +55,7 @@ public sealed class LanguageConfigTests
     public void Build_EscapeSequences_AreUnescaped()
     {
         var section = new MainLanguageImpl();
-        using var config = LanguageConfigBuilder.Create("testapp")
+        using var config = LanguageConfigBuilder.ForBasename("testapp")
             .WithDirectory(LangDir)
             .WithBaseLanguage("en-US")
             .AddSection<IMainLanguage>(section)
@@ -79,7 +79,7 @@ public sealed class LanguageConfigTests
             File.WriteAllText(Path.Combine(tempDir, "app.en-US.ini"), "");
 
             var section = new MainLanguageImpl();
-            using var config = LanguageConfigBuilder.Create("app")
+            using var config = LanguageConfigBuilder.ForBasename("app")
                 .WithDirectory(tempDir)
                 .WithBaseLanguage("en-US")
                 .AddSection<IMainLanguage>(section)
@@ -99,7 +99,7 @@ public sealed class LanguageConfigTests
     public void SetLanguage_SwitchesToNewLanguage()
     {
         var section = new MainLanguageImpl();
-        using var config = LanguageConfigBuilder.Create("testapp")
+        using var config = LanguageConfigBuilder.ForBasename("testapp")
             .WithDirectory(LangDir)
             .WithBaseLanguage("en-US")
             .WithCurrentLanguage("en-US")
@@ -122,7 +122,7 @@ public sealed class LanguageConfigTests
         // de-DE.ini overrides WelcomeMessage=Willkommen bei der Anwendung!
         // So after loading de-DE we expect the overridden value.
         var section = new MainLanguageImpl();
-        using var config = LanguageConfigBuilder.Create("testapp")
+        using var config = LanguageConfigBuilder.ForBasename("testapp")
             .WithDirectory(LangDir)
             .WithBaseLanguage("en-US")
             .AddSection<IMainLanguage>(section)
@@ -140,7 +140,7 @@ public sealed class LanguageConfigTests
     {
         // de-DE.ini does not contain CancelButton — should fall back to en-US value "Cancel".
         var section = new MainLanguageImpl();
-        using var config = LanguageConfigBuilder.Create("testapp")
+        using var config = LanguageConfigBuilder.ForBasename("testapp")
             .WithDirectory(LangDir)
             .WithBaseLanguage("en-US")
             .AddSection<IMainLanguage>(section)
@@ -158,8 +158,9 @@ public sealed class LanguageConfigTests
     [Fact]
     public void Build_ModuleSection_LoadsFromModuleFile()
     {
+        // ICoreLanguage (SectionName="core", no ModuleName) reads [core] from testapp.en-US.ini.
         var coreSection = new CoreLanguageImpl();
-        using var config = LanguageConfigBuilder.Create("testapp")
+        using var config = LanguageConfigBuilder.ForBasename("testapp")
             .WithDirectory(LangDir)
             .WithBaseLanguage("en-US")
             .AddSection<ICoreLanguage>(coreSection)
@@ -173,7 +174,7 @@ public sealed class LanguageConfigTests
     public void SetLanguage_ModuleSection_SwitchesCorrectly()
     {
         var coreSection = new CoreLanguageImpl();
-        using var config = LanguageConfigBuilder.Create("testapp")
+        using var config = LanguageConfigBuilder.ForBasename("testapp")
             .WithDirectory(LangDir)
             .WithBaseLanguage("en-US")
             .AddSection<ICoreLanguage>(coreSection)
@@ -193,7 +194,7 @@ public sealed class LanguageConfigTests
         var main = new MainLanguageImpl();
         var core = new CoreLanguageImpl();
 
-        using var config = LanguageConfigBuilder.Create("testapp")
+        using var config = LanguageConfigBuilder.ForBasename("testapp")
             .WithDirectory(LangDir)
             .WithBaseLanguage("en-US")
             .AddSection<IMainLanguage>(main)
@@ -210,7 +211,7 @@ public sealed class LanguageConfigTests
     public void GetSection_ReturnsRegisteredSection()
     {
         var section = new MainLanguageImpl();
-        using var config = LanguageConfigBuilder.Create("testapp")
+        using var config = LanguageConfigBuilder.ForBasename("testapp")
             .WithDirectory(LangDir)
             .WithBaseLanguage("en-US")
             .AddSection<IMainLanguage>(section)
@@ -223,7 +224,7 @@ public sealed class LanguageConfigTests
     [Fact]
     public void GetSection_UnregisteredType_Throws()
     {
-        using var config = LanguageConfigBuilder.Create("testapp")
+        using var config = LanguageConfigBuilder.ForBasename("testapp")
             .WithDirectory(LangDir)
             .WithBaseLanguage("en-US")
             .Build();
@@ -237,7 +238,7 @@ public sealed class LanguageConfigTests
     public void GetAvailableLanguages_ReturnsDiscoveredLanguages()
     {
         var section = new MainLanguageImpl();
-        using var config = LanguageConfigBuilder.Create("testapp")
+        using var config = LanguageConfigBuilder.ForBasename("testapp")
             .WithDirectory(LangDir)
             .WithBaseLanguage("en-US")
             .AddSection<IMainLanguage>(section)
@@ -263,7 +264,7 @@ public sealed class LanguageConfigTests
     public void SetLanguage_RaisesLanguageChangedEvent()
     {
         var section = new MainLanguageImpl();
-        using var config = LanguageConfigBuilder.Create("testapp")
+        using var config = LanguageConfigBuilder.ForBasename("testapp")
             .WithDirectory(LangDir)
             .WithBaseLanguage("en-US")
             .AddSection<IMainLanguage>(section)
@@ -283,7 +284,7 @@ public sealed class LanguageConfigTests
     public async Task BuildAsync_LoadsTranslations()
     {
         var section = new MainLanguageImpl();
-        using var config = await LanguageConfigBuilder.Create("testapp")
+        using var config = await LanguageConfigBuilder.ForBasename("testapp")
             .WithDirectory(LangDir)
             .WithBaseLanguage("en-US")
             .AddSection<IMainLanguage>(section)
@@ -298,7 +299,7 @@ public sealed class LanguageConfigTests
     public void DictionaryInterface_IndexerReturnsTranslation()
     {
         var section = new DictionaryLanguageImpl();
-        using var config = LanguageConfigBuilder.Create("testapp")
+        using var config = LanguageConfigBuilder.ForBasename("testapp")
             .WithDirectory(LangDir)
             .WithBaseLanguage("en-US")
             .AddSection<IDictionaryLanguage>(section)
@@ -315,7 +316,7 @@ public sealed class LanguageConfigTests
     public void DictionaryInterface_ContainsKey_Works()
     {
         var section = new DictionaryLanguageImpl();
-        using var config = LanguageConfigBuilder.Create("testapp")
+        using var config = LanguageConfigBuilder.ForBasename("testapp")
             .WithDirectory(LangDir)
             .WithBaseLanguage("en-US")
             .AddSection<IDictionaryLanguage>(section)
@@ -333,7 +334,7 @@ public sealed class LanguageConfigTests
     public void Build_WithoutBaseLanguage_Throws()
     {
         Assert.Throws<InvalidOperationException>(() =>
-            LanguageConfigBuilder.Create("testapp")
+            LanguageConfigBuilder.ForBasename("testapp")
                 .WithDirectory(LangDir)
                 .Build());
     }
@@ -343,7 +344,7 @@ public sealed class LanguageConfigTests
     {
         var section = new MainLanguageImpl();
         Assert.Throws<InvalidOperationException>(() =>
-            LanguageConfigBuilder.Create("testapp")
+            LanguageConfigBuilder.ForBasename("testapp")
                 .WithBaseLanguage("en-US")
                 // No WithDirectory, no per-section directory
                 .AddSection<IMainLanguage>(section)
@@ -358,8 +359,10 @@ public sealed class LanguageConfigTests
         var main = new MainLanguageImpl();
         var core = new CoreLanguageImpl();
 
-        Assert.Null(main.SectionName);
-        Assert.Equal("core", core.SectionName);
+        Assert.Equal("MainLanguage", main.SectionName);  // derived from IMainLanguage
+        Assert.Null(main.ModuleName);
+        Assert.Equal("core", core.SectionName);           // explicit
+        Assert.Null(core.ModuleName);
     }
 
     // ── ILanguageSection is optional ──────────────────────────────────────────
@@ -369,7 +372,7 @@ public sealed class LanguageConfigTests
     {
         // IMainLanguage does NOT extend ILanguageSection — verify it still works end-to-end.
         var section = new MainLanguageImpl();
-        using var config = LanguageConfigBuilder.Create("testapp")
+        using var config = LanguageConfigBuilder.ForBasename("testapp")
             .WithDirectory(LangDir)
             .WithBaseLanguage("en-US")
             .AddSection<IMainLanguage>(section)
@@ -398,9 +401,8 @@ public sealed class LanguageConfigTests
     [Fact]
     public void CoreSectionInMainFile_LoadsKeysFromSection()
     {
-        // mergedapp.en-US.ini has WelcomeMessage + [core] section.
-        // No dedicated mergedapp.core.en-US.ini exists.
-        // ICoreLanguage should fall back to reading the [core] block in the main file.
+        // ICoreLanguage (SectionName="core", no ModuleName) reads the [core] block directly from the main file.
+        // Both sections coexist in mergedapp.en-US.ini.
         var main = new MainLanguageImpl();
         var core = new CoreLanguageImpl();
 
@@ -417,38 +419,50 @@ public sealed class LanguageConfigTests
     }
 
     [Fact]
-    public void MainFileWithSection_MainSectionReadsAllKeys()
+    public void MergedFile_BothSectionsLoadFromSameFile()
     {
-        // When SectionName is null (IMainLanguage), all keys are read from the file
-        // including those outside [section] blocks.
+        // mergedapp.en-US.ini has [MainLanguage] and [core] sections in a single file.
+        // Both ICoreLanguage and IMainLanguage load their respective sections.
         var main = new MainLanguageImpl();
+        var core = new CoreLanguageImpl();
 
         using var config = LanguageConfigBuilder.ForBasename("mergedapp")
             .WithDirectory(LangDir)
             .WithBaseLanguage("en-US")
             .AddSection<IMainLanguage>(main)
+            .AddSection<ICoreLanguage>(core)
             .Build();
 
         Assert.Equal("Welcome (merged)", main.WelcomeMessage);
         Assert.Equal("Error (merged)", main.ErrorTitle);
+        Assert.Equal("Core Module (merged)", core.CoreTitle);
+        Assert.Equal("Ready (merged)", core.CoreStatus);
     }
 
     [Fact]
-    public void DedicatedFileHasPrecedenceOverSectionInMainFile()
+    public void ModuleName_SelectsModuleFile()
     {
-        // testapp has a dedicated testapp.core.en-US.ini file.
-        // That file should be used in preference to any [core] section in testapp.en-US.ini.
+        // IPluginLanguage has ModuleName = "core" → reads from testapp.core.en-US.ini
+        // ICoreLanguage has no ModuleName → reads from testapp.en-US.ini
+        // Both use SectionName = "core" to locate the [core] block in their respective files.
         var core = new CoreLanguageImpl();
+        var plugin = new PluginLanguageImpl();
 
-        using var config = LanguageConfigBuilder.Create("testapp")
+        using var config = LanguageConfigBuilder.ForBasename("testapp")
             .WithDirectory(LangDir)
             .WithBaseLanguage("en-US")
             .AddSection<ICoreLanguage>(core)
+            .AddSection<IPluginLanguage>(plugin)
             .Build();
 
-        // Values from testapp.core.en-US.ini (not from a hypothetical [core] in testapp.en-US.ini)
         Assert.Equal("Core Module", core.CoreTitle);
         Assert.Equal("Ready", core.CoreStatus);
+        Assert.Equal("Core Module", plugin.CoreTitle);
+        Assert.Equal("Ready", plugin.CoreStatus);
+        Assert.Equal("core", core.SectionName);
+        Assert.Null(core.ModuleName);
+        Assert.Equal("core", plugin.SectionName);
+        Assert.Equal("core", plugin.ModuleName);
     }
 
     // ── Deferred / plugin loading (Create + AddSection + Load) ───────────────
@@ -458,7 +472,7 @@ public sealed class LanguageConfigTests
     {
         var main = new MainLanguageImpl();
 
-        // Phase 1: host creates config without loading (aligned with IniConfigBuilder.Create)
+        // Phase 1: host creates config without loading
         var config = LanguageConfigBuilder.ForBasename("testapp")
             .WithDirectory(LangDir)
             .WithBaseLanguage("en-US")
@@ -482,7 +496,7 @@ public sealed class LanguageConfigTests
     public void Create_WithoutLoad_SectionsHaveNoTranslations()
     {
         var main = new MainLanguageImpl();
-        var config = LanguageConfigBuilder.Create("testapp")
+        var config = LanguageConfigBuilder.ForBasename("testapp")
             .WithDirectory(LangDir)
             .WithBaseLanguage("en-US")
             .AddSection<IMainLanguage>(main)
@@ -497,7 +511,7 @@ public sealed class LanguageConfigTests
     [Fact]
     public void AddSection_OnConfig_MakesItAvailableViaGetSection()
     {
-        var config = LanguageConfigBuilder.Create("testapp")
+        var config = LanguageConfigBuilder.ForBasename("testapp")
             .WithDirectory(LangDir)
             .WithBaseLanguage("en-US")
             .Create();
@@ -516,7 +530,7 @@ public sealed class LanguageConfigTests
     public void Load_SectionWithoutDirectory_Throws()
     {
         // AddSection with no directory and no default directory → Load() should throw
-        var config = LanguageConfigBuilder.Create("testapp")
+        var config = LanguageConfigBuilder.ForBasename("testapp")
             .WithBaseLanguage("en-US")
             .Create();
 
@@ -533,7 +547,7 @@ public sealed class LanguageConfigTests
     public void CurrentLanguage_ReflectsActiveLanguage()
     {
         var section = new MainLanguageImpl();
-        using var config = LanguageConfigBuilder.Create("testapp")
+        using var config = LanguageConfigBuilder.ForBasename("testapp")
             .WithDirectory(LangDir)
             .WithBaseLanguage("en-US")
             .WithCurrentLanguage("de-DE")
@@ -542,5 +556,36 @@ public sealed class LanguageConfigTests
 
         Assert.Equal("de-DE", config.CurrentLanguage);
         Assert.Equal("en-US", config.BaseLanguage);
+    }
+
+    // ── Keys outside section blocks ───────────────────────────────────────────
+
+    [Fact]
+    public void KeysOutsideSection_AreIgnored()
+    {
+        // Keys outside any [section] block must be silently ignored.
+        var tempDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            // File has a key outside sections (ignored) and one inside [MainLanguage]
+            File.WriteAllText(Path.Combine(tempDir, "app.en-US.ini"),
+                "WelcomeMessage=ShouldBeIgnored\n[MainLanguage]\nWelcomeMessage=InSection\n");
+
+            var section = new MainLanguageImpl();
+            using var config = LanguageConfigBuilder.ForBasename("app")
+                .WithDirectory(tempDir)
+                .WithBaseLanguage("en-US")
+                .AddSection<IMainLanguage>(section)
+                .Build();
+
+            Assert.Equal("InSection", section.WelcomeMessage);
+            // Verify the key that was outside the section was NOT loaded
+            Assert.Equal("###ErrorTitle###", section.ErrorTitle);
+        }
+        finally
+        {
+            Directory.Delete(tempDir, recursive: true);
+        }
     }
 }

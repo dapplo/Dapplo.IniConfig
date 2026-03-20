@@ -75,8 +75,8 @@ public sealed class LanguageConfigBuilder
     /// <paramref name="basename"/>.
     /// </summary>
     /// <param name="basename">
-    /// Base name used in the language file naming convention.  For an application named
-    /// <c>"myapp"</c> the files would be named <c>myapp.en-US.ini</c>, etc.
+    /// Base name for the language file naming convention: <c>{basename}.{ietf}.ini</c>
+    /// (or <c>{basename}.{module}.{ietf}.ini</c> for sections with a module name).
     /// </param>
     public static LanguageConfigBuilder ForBasename(string basename)
     {
@@ -85,14 +85,6 @@ public sealed class LanguageConfigBuilder
 
         return new LanguageConfigBuilder(basename);
     }
-
-    /// <summary>
-    /// Creates a new <see cref="LanguageConfigBuilder"/>.
-    /// </summary>
-    /// <remarks>Alias for <see cref="ForBasename"/> kept for backward compatibility.</remarks>
-    /// <param name="basename">Base name used in the language file naming convention.</param>
-    public static LanguageConfigBuilder Create(string basename)
-        => ForBasename(basename);
 
     // ── Configuration ─────────────────────────────────────────────────────────
 
@@ -167,8 +159,9 @@ public sealed class LanguageConfigBuilder
 
     /// <summary>
     /// Registers a language section on the builder.
-    /// The module name (if any) is read from the section's <see cref="LanguageSectionBase.SectionName"/>
-    /// at load time and determines which file / section within a file is used.
+    /// The section name and optional module name are read from the section's
+    /// <see cref="LanguageSectionBase.SectionName"/> and <see cref="LanguageSectionBase.ModuleName"/>
+    /// at load time.
     /// </summary>
     /// <typeparam name="T">The language section interface or class type.</typeparam>
     /// <param name="section">The generated concrete section instance.</param>
@@ -225,12 +218,6 @@ public sealed class LanguageConfigBuilder
             _defaultDirectory,
             sections);
     }
-
-    /// <summary>
-    /// Obsolete: use <see cref="Create()"/> instead.
-    /// </summary>
-    [Obsolete("Use Create() instead. Prepare() is an alias kept for backward compatibility.")]
-    public LanguageConfig Prepare() => Create();
 
     /// <summary>
     /// Builds and loads a <see cref="LanguageConfig"/>.
