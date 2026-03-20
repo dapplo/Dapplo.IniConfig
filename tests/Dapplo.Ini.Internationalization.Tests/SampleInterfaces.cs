@@ -8,9 +8,10 @@ namespace Dapplo.Ini.Internationalization.Tests;
 
 /// <summary>
 /// Base language section (no module name → file: testapp.{ietf}.ini).
+/// Does NOT extend ILanguageSection to verify that is optional.
 /// </summary>
 [IniLanguageSection]
-public interface IMainLanguage : ILanguageSection
+public interface IMainLanguage
 {
     string WelcomeMessage { get; }
     string ErrorTitle { get; }
@@ -23,6 +24,7 @@ public interface IMainLanguage : ILanguageSection
 
 /// <summary>
 /// Module-specific language section (module = "core" → file: testapp.core.{ietf}.ini).
+/// Optionally extends ILanguageSection to show it still works when present.
 /// </summary>
 [IniLanguageSection("core")]
 public interface ICoreLanguage : ILanguageSection
@@ -33,10 +35,21 @@ public interface ICoreLanguage : ILanguageSection
 
 /// <summary>
 /// Language section whose interface also extends IReadOnlyDictionary so the dynamic
-/// indexer can be used.
+/// indexer can be used. Does NOT extend ILanguageSection.
 /// </summary>
 [IniLanguageSection]
-public interface IDictionaryLanguage : ILanguageSection, IReadOnlyDictionary<string, string>
+public interface IDictionaryLanguage : IReadOnlyDictionary<string, string>
 {
     string WelcomeMessage { get; }
 }
+
+/// <summary>
+/// Simulates a plugin-provided language section used in deferred-loading tests.
+/// </summary>
+[IniLanguageSection("core")]
+public interface IPluginLanguage
+{
+    string CoreTitle { get; }
+    string CoreStatus { get; }
+}
+

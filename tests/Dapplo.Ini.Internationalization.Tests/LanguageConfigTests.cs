@@ -362,6 +362,99 @@ public sealed class LanguageConfigTests
         Assert.Equal("core", core.ModuleName);
     }
 
+    // ── ILanguageSection is optional ──────────────────────────────────────────
+
+    [Fact]
+    public void Interface_WithoutILanguageSection_WorksCorrectly()
+    {
+        // IMainLanguage does NOT extend ILanguageSection — verify it still works end-to-end.
+        var section = new MainLanguageImpl();
+        using var config = LanguageConfigBuilder.Create("testapp")
+            .WithDirectory(LangDir)
+            .WithBaseLanguage("en-US")
+            .AddSection<IMainLanguage>(section)
+            .Build();
+
+        Assert.Equal("Welcome to the application!", section.WelcomeMessage);
+    }
+
+    // ── Deferred / plugin loading (Prepare + AddSection + Load) ──────────────
+
+    [Fact]
+    public void Prepare_ThenPluginAddSection_ThenLoad_LoadsAllSections()
+    {
+        var main = new MainLanguageImpl();
+
+        // Phase 1: host creates config without loading
+        var config = LanguageConfigBuilder.Create("testapp")
+            .WithDirectory(LangDir)
+            .WithBaseLanguage("en-US")
+            .AddSection<IMainLanguage>(main)
+            .Prepare();
+
+        // Phase 2: plugin registers its own section
+        var plugin = new PluginLanguageImpl();
+        config.AddSection<IPluginLanguage>(plugin, LangDir);
+
+        // Phase 3: host triggers loading
+        config.Load();
+        config.Dispose();
+
+        Assert.Equal("Welcome to the application!", main.WelcomeMessage);
+        Assert.Equal("Core Module", plugin.CoreTitle);
+        Assert.Equal("Ready", plugin.CoreStatus);
+    }
+
+    [Fact]
+    public void Prepare_WithoutLoad_SectionsHaveNoTranslations()
+    {
+        var main = new MainLanguageImpl();
+        var config = LanguageConfigBuilder.Create("testapp")
+            .WithDirectory(LangDir)
+            .WithBaseLanguage("en-US")
+            .AddSection<IMainLanguage>(main)
+            .Prepare();
+
+        // No Load() called — translations must not be present yet
+        Assert.Equal("###WelcomeMessage###", main.WelcomeMessage);
+
+        config.Dispose();
+    }
+
+    [Fact]
+    public void AddSection_OnConfig_MakesItAvailableViaGetSection()
+    {
+        var config = LanguageConfigBuilder.Create("testapp")
+            .WithDirectory(LangDir)
+            .WithBaseLanguage("en-US")
+            .Prepare();
+
+        var plugin = new PluginLanguageImpl();
+        config.AddSection<IPluginLanguage>(plugin, LangDir);
+        config.Load();
+
+        var retrieved = config.GetSection<IPluginLanguage>();
+        Assert.Same(plugin, retrieved);
+
+        config.Dispose();
+    }
+
+    [Fact]
+    public void Load_SectionWithoutDirectory_Throws()
+    {
+        // AddSection with no directory and no default directory → Load() should throw
+        var config = LanguageConfigBuilder.Create("testapp")
+            .WithBaseLanguage("en-US")
+            .Prepare();
+
+        var plugin = new PluginLanguageImpl();
+        // Add without a directory (empty string stored internally)
+        config.AddSection<IPluginLanguage>(plugin);
+
+        Assert.Throws<InvalidOperationException>(() => config.Load());
+        config.Dispose();
+    }
+
     // ── CurrentLanguage / BaseLanguage properties ─────────────────────────────
 
     [Fact]

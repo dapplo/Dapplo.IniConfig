@@ -15,7 +15,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\Dapplo.Ini.Internationalization\Dapplo.Ini.Internationalization.csproj" />
+    <ProjectReference Include="..\..\src\Dapplo.Ini\Dapplo.Ini.csproj" />
     <ProjectReference Include="..\..\src\Dapplo.Ini.Generator\Dapplo.Ini.Generator.csproj"
                       OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
   </ItemGroup>

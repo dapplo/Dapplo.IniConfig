@@ -1,26 +1,50 @@
 // Copyright (c) Dapplo. All rights reserved.
 // Licensed under the MIT license. See LICENSE file in the project root for details.
 
-using Dapplo.Ini.Internationalization.Interfaces;
-
 namespace Dapplo.Ini.Internationalization.Configuration;
 
 /// <summary>
 /// Fluent builder that configures a <see cref="LanguageConfig"/>.
 /// </summary>
-/// <example>
-/// <code>
-/// var langConfig = LanguageConfigBuilder.Create("myapp")
-///     .WithDirectory("/path/to/lang")
-///     .WithBaseLanguage("en-US")
-///     .WithCurrentLanguage("de-DE")
-///     .AddSection&lt;IMainLanguage&gt;(new MainLanguageImpl())
-///     .AddSection&lt;ICoreLanguage&gt;(new CoreLanguageImpl(), "/path/to/core/lang")
-///     .UseFallback()
-///     .MonitorFiles()
-///     .Build();
-/// </code>
-/// </example>
+/// <remarks>
+/// Two usage patterns are supported:
+/// <list type="number">
+///   <item>
+///     <term>Direct build</term>
+///     <description>
+///     All sections are registered on the builder and the config is built and loaded in one step:
+///     <code>
+///     using var config = LanguageConfigBuilder.Create("myapp")
+///         .WithDirectory("/path/to/lang")
+///         .WithBaseLanguage("en-US")
+///         .AddSection&lt;IMainLanguage&gt;(new MainLanguageImpl())
+///         .Build();
+///     </code>
+///     </description>
+///   </item>
+///   <item>
+///     <term>Deferred (plugin-friendly) build</term>
+///     <description>
+///     The host creates the config without loading it, plugins register their own sections,
+///     and then the host triggers loading:
+///     <code>
+///     // Host (Phase 1) — create without loading:
+///     var config = LanguageConfigBuilder.Create("myapp")
+///         .WithDirectory("/path/to/lang")
+///         .WithBaseLanguage("en-US")
+///         .AddSection&lt;IMainLanguage&gt;(new MainLanguageImpl())
+///         .Prepare();
+///
+///     // Plugin (Phase 2) — register own section:
+///     config.AddSection&lt;IPluginLanguage&gt;(new PluginLanguageImpl(), "/path/to/plugin/lang");
+///
+///     // Host (Phase 3) — load all sections at once:
+///     config.Load();
+///     </code>
+///     </description>
+///   </item>
+/// </list>
+/// </remarks>
 public sealed class LanguageConfigBuilder
 {
     private readonly string _basename;
@@ -131,39 +155,89 @@ public sealed class LanguageConfigBuilder
 
     /// <summary>
     /// Registers a language section.
-    /// The section's <see cref="ILanguageSection.ModuleName"/> determines which file name
-    /// pattern is used (with or without module component).
+    /// The module name (if any) is read from the section's <see cref="LanguageSectionBase.ModuleName"/>
+    /// at load time and determines which file name pattern is used.
     /// </summary>
-    /// <typeparam name="T">The language section interface type.</typeparam>
+    /// <typeparam name="T">The language section interface or class type.</typeparam>
     /// <param name="section">The generated concrete section instance.</param>
     /// <param name="directory">
     /// Optional override directory for this section's language files.
     /// When <c>null</c> the default directory set by <see cref="WithDirectory"/> is used.
     /// </param>
+    /// <exception cref="ArgumentException">
+    /// Thrown when <paramref name="section"/> is not a generated language section
+    /// (i.e. does not derive from <see cref="LanguageSectionBase"/>).
+    /// </exception>
     public LanguageConfigBuilder AddSection<T>(T section, string? directory = null)
-        where T : ILanguageSection
+        where T : class
     {
         if (section is null) throw new ArgumentNullException(nameof(section));
-        if (section is not LanguageSectionBase)
+        if (section is not LanguageSectionBase baseSection)
             throw new ArgumentException(
-                $"Section must derive from {nameof(LanguageSectionBase)}.", nameof(section));
+                $"Section must be a generated language section (must derive from {nameof(LanguageSectionBase)}).",
+                nameof(section));
 
-        _sections.Add((typeof(T), (LanguageSectionBase)(object)section, directory));
+        _sections.Add((typeof(T), baseSection, directory));
         return this;
     }
 
-    // ── Build ─────────────────────────────────────────────────────────────────
+    // ── Build / Prepare ───────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Creates the <see cref="LanguageConfig"/> and registers all builder sections
+    /// <em>without loading any language files</em>.
+    /// </summary>
+    /// <remarks>
+    /// Use this instead of <see cref="Build"/> when plugins or other components need to
+    /// register their own language sections before loading begins.  The typical three-phase
+    /// flow is:
+    /// <code>
+    /// // Phase 1 — host creates the config (no I/O yet):
+    /// var config = LanguageConfigBuilder.Create("myapp")
+    ///     .WithDirectory(langDir)
+    ///     .WithBaseLanguage("en-US")
+    ///     .AddSection&lt;IMainLanguage&gt;(mainSection)
+    ///     .Prepare();
+    ///
+    /// // Phase 2 — plugins register their own sections (no I/O):
+    /// foreach (var plugin in LoadPlugins())
+    ///     plugin.PreInit(config);   // plugin calls config.AddSection&lt;IPluginLanguage&gt;(...)
+    ///
+    /// // Phase 3 — load everything at once (file I/O):
+    /// config.Load();
+    /// </code>
+    /// </remarks>
+    /// <returns>The newly created (not yet loaded) <see cref="LanguageConfig"/>.</returns>
+    public LanguageConfig Prepare()
+    {
+        if (string.IsNullOrEmpty(_baseLanguage))
+            throw new InvalidOperationException(
+                "A base language must be specified via WithBaseLanguage().");
+
+        string? effectiveFallback = _useFallback ? _fallbackLanguage : null;
+
+        var sections = _sections.Select(s => (s.Type, s.Section, s.Directory)).ToList();
+
+        return new LanguageConfig(
+            _basename,
+            _baseLanguage!,
+            _currentLanguage ?? _baseLanguage!,
+            effectiveFallback,
+            _monitorFiles,
+            _defaultDirectory,
+            sections);
+    }
 
     /// <summary>
     /// Builds and loads a <see cref="LanguageConfig"/>.
     /// </summary>
     /// <exception cref="InvalidOperationException">
-    /// Thrown when <see cref="WithBaseLanguage"/> has not been called, or when no default
-    /// directory is set and a section has no override directory.
+    /// Thrown when <see cref="WithBaseLanguage"/> has not been called, or when a section
+    /// has no directory configured and no default directory is set.
     /// </exception>
     public LanguageConfig Build()
     {
-        var config = CreateCore();
+        var config = Prepare();
         config.Load();
         return config;
     }
@@ -173,44 +247,8 @@ public sealed class LanguageConfigBuilder
     /// </summary>
     public async Task<LanguageConfig> BuildAsync(CancellationToken cancellationToken = default)
     {
-        var config = CreateCore();
+        var config = Prepare();
         await config.LoadAsync(cancellationToken).ConfigureAwait(false);
         return config;
-    }
-
-    // ── helpers ───────────────────────────────────────────────────────────────
-
-    private LanguageConfig CreateCore()
-    {
-        if (string.IsNullOrEmpty(_baseLanguage))
-            throw new InvalidOperationException(
-                "A base language must be specified via WithBaseLanguage().");
-
-        // Build the resolved section list, applying the default directory where needed.
-        var resolvedSections =
-            new List<(Type Type, LanguageSectionBase Section, string Directory)>(_sections.Count);
-
-        foreach (var (type, section, overrideDir) in _sections)
-        {
-            var dir = overrideDir ?? _defaultDirectory;
-            if (string.IsNullOrEmpty(dir))
-                throw new InvalidOperationException(
-                    $"No directory specified for section '{type.Name}'. " +
-                    "Call WithDirectory() or pass a directory to AddSection().");
-
-            resolvedSections.Add((type, section, dir!));
-        }
-
-        // When UseFallback() was called without an explicit language, we pass null to LanguageConfig
-        // so it uses the base language as the fallback (which is the default behaviour anyway).
-        string? effectiveFallback = _useFallback ? _fallbackLanguage : null;
-
-        return new LanguageConfig(
-            _basename,
-            _baseLanguage!,
-            _currentLanguage ?? _baseLanguage!,
-            effectiveFallback,
-            _monitorFiles,
-            resolvedSections);
     }
 }
