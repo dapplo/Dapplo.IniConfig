@@ -48,6 +48,9 @@ public sealed class IniConfigBuilder
     // Migration: optional metadata section config (null = disabled)
     private IniMetadataConfig? _metadataConfig;
 
+    // Diagnostic listeners
+    private readonly List<IIniConfigListener> _listeners = new();
+
     internal IniConfigBuilder(string fileName)
     {
         // Extract just the filename component (in case a full path was passed), then strip
@@ -286,6 +289,21 @@ public sealed class IniConfigBuilder
         return this;
     }
 
+    // ── diagnostic listeners ──────────────────────────────────────────────────
+
+    /// <summary>
+    /// Registers a listener that will be called for diagnostic events such as file loaded,
+    /// file not found, saved, reloaded, and errors.  Multiple listeners may be registered;
+    /// they are invoked in registration order.
+    /// </summary>
+    /// <param name="listener">The listener to register; must not be <c>null</c>.</param>
+    public IniConfigBuilder AddListener(IIniConfigListener listener)
+    {
+        if (listener is null) throw new ArgumentNullException(nameof(listener));
+        _listeners.Add(listener);
+        return this;
+    }
+
     /// <summary>
     /// Registers an <see cref="IIniSection"/> instance under the explicit interface type
     /// <typeparamref name="T"/>. The generated concrete class must be passed; it will be
@@ -459,6 +477,7 @@ public sealed class IniConfigBuilder
         config.ConstantFilePaths.AddRange(_constantFilePaths);
         config.ValueSources.AddRange(_valueSources);
         config.ValueSourcesAsync.AddRange(_valueSourcesAsync);
+        config.Listeners.AddRange(_listeners);
 
         // Seed sections (no I/O — Load() will reset and populate them)
         foreach (var kvp in _sections)
