@@ -1,6 +1,7 @@
 // Copyright (c) Dapplo. All rights reserved.
 // Licensed under the MIT license. See LICENSE file in the project root for details.
 
+using Dapplo.Ini.Interfaces;
 using Dapplo.Ini.Internationalization;
 
 namespace Dapplo.Ini.Internationalization.Configuration;
@@ -14,43 +15,10 @@ namespace Dapplo.Ini.Internationalization.Configuration;
 /// <see cref="Create()"/> creates without loading (deferred, for plugin scenarios),
 /// <see cref="Build"/> creates and loads immediately.
 /// </para>
-/// Two usage patterns are supported:
-/// <list type="number">
-///   <item>
-///     <term>Direct build</term>
-///     <description>
-///     All sections are registered on the builder and the config is built and loaded in one step:
-///     <code>
-///     using var config = LanguageConfigBuilder.ForBasename("myapp")
-///         .AddSearchPath("/path/to/lang")
-///         .WithBaseLanguage("en-US")
-///         .RegisterSection&lt;IMainLanguage&gt;(new MainLanguageImpl())
-///         .Build();
-///     </code>
-///     </description>
-///   </item>
-///   <item>
-///     <term>Deferred (plugin-friendly) build</term>
-///     <description>
-///     The host creates the config without loading it, plugins register their own sections,
-///     and then the host triggers loading:
-///     <code>
-///     // Host (Phase 1) — create without loading:
-///     var config = LanguageConfigBuilder.ForBasename("myapp")
-///         .AddSearchPath("/path/to/lang")
-///         .WithBaseLanguage("en-US")
-///         .RegisterSection&lt;IMainLanguage&gt;(new MainLanguageImpl())
-///         .Create();
-///
-///     // Plugin (Phase 2) — register own section:
-///     config.RegisterSection&lt;IPluginLanguage&gt;(new PluginLanguageImpl(), "/path/to/plugin/lang");
-///
-///     // Host (Phase 3) — load all sections at once:
-///     config.Load();
-///     </code>
-///     </description>
-///   </item>
-/// </list>
+/// <para>
+/// See the project wiki page <em>Internationalization</em> for usage patterns including the
+/// direct-build pattern and the deferred (plugin-friendly) build pattern.
+/// </para>
 /// </remarks>
 public sealed class LanguageConfigBuilder
 {
@@ -64,6 +32,9 @@ public sealed class LanguageConfigBuilder
 
     // Registered sections: type → (instance, optional override directory)
     private readonly List<(Type Type, LanguageSectionBase Section, string? Directory)> _sections = new();
+
+    // Diagnostic listeners
+    private readonly List<IIniConfigListener> _listeners = new();
 
     private LanguageConfigBuilder(string basename)
     {
@@ -188,6 +159,26 @@ public sealed class LanguageConfigBuilder
         return this;
     }
 
+    // ── Diagnostic listeners ──────────────────────────────────────────────────
+
+    /// <summary>
+    /// Registers a listener that will be called for diagnostic events such as file loaded,
+    /// file not found, reloaded, and errors.  Multiple listeners may be registered;
+    /// they are invoked in registration order.
+    /// </summary>
+    /// <remarks>
+    /// There is zero overhead when no listener is registered.
+    /// See the project wiki page <em>Listeners</em> for the full callback reference and notes on
+    /// which callbacks are raised by <c>LanguageConfig</c>.
+    /// </remarks>
+    /// <param name="listener">The listener to register; must not be <c>null</c>.</param>
+    public LanguageConfigBuilder AddListener(IIniConfigListener listener)
+    {
+        if (listener is null) throw new ArgumentNullException(nameof(listener));
+        _listeners.Add(listener);
+        return this;
+    }
+
     // ── Create / Build ────────────────────────────────────────────────────────
 
     /// <summary>
@@ -223,7 +214,8 @@ public sealed class LanguageConfigBuilder
             effectiveFallback,
             _monitorFiles,
             _defaultDirectory,
-            sections);
+            sections,
+            _listeners);
 
         LanguageConfigRegistry.Register(_basename, config);
         return config;
