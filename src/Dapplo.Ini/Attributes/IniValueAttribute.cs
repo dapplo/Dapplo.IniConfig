@@ -40,4 +40,12 @@ public sealed class IniValueAttribute : Attribute
     /// <c>INotifyPropertyChanged</c> events from the generated class.
     /// </summary>
     public bool NotifyPropertyChanged { get; set; }
+
+    /// <summary>
+    /// When <c>true</c> the property is never loaded from or saved to the INI file.
+    /// The property participates in <see cref="IIniSection.ResetToDefaults"/> (default value
+    /// is applied) but its value lives only in memory for the lifetime of the application.
+    /// Use this for settings that must be configurable at runtime but must not be persisted.
+    /// </summary>
+    public bool RuntimeOnly { get; set; }
 }

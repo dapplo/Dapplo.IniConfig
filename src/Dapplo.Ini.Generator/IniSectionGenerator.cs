@@ -85,6 +85,9 @@ public sealed class IniSectionGenerator : IIncrementalGenerator
         public string? DictionaryValueTypeFullName { get; set; }
         // True when [IgnoreDataMember] is present — property is excluded from INI read/write.
         public bool IsIgnored { get; set; }
+        // True when [IniValue(RuntimeOnly=true)] — property has a default and participates in
+        // ResetToDefaults but is never loaded from or saved to the INI file.
+        public bool IsRuntimeOnly { get; set; }
         // Validation attributes from System.ComponentModel.DataAnnotations
         public bool IsRequired { get; set; }
         public string? RequiredErrorMessage { get; set; }
@@ -260,6 +263,7 @@ public sealed class IniSectionGenerator : IIncrementalGenerator
                         case "Transactional":         prop.IsTransactional = na.Value.Value is true; break;
                         case "NotifyPropertyChanged": prop.NotifyPropertyChanged = na.Value.Value is true; break;
                         case "ReadOnly":              prop.IsReadOnly = na.Value.Value is true; break;
+                        case "RuntimeOnly":           prop.IsRuntimeOnly = na.Value.Value is true; break;
                     }
                 }
             }
@@ -572,9 +576,9 @@ public sealed class IniSectionGenerator : IIncrementalGenerator
                 sb.AppendLine($"                PropertyChanging?.Invoke(this, new PropertyChangingEventArgs(nameof({p.Name})));");
             }
 
-            if (p.IsIgnored)
+            if (p.IsIgnored || p.IsRuntimeOnly)
             {
-                // [IgnoreDataMember] — only update the backing field; no INI interaction.
+                // [IgnoreDataMember] / RuntimeOnly — only update the backing field; no INI interaction.
                 sb.AppendLine($"                {fieldName} = value;");
             }
             else
@@ -657,8 +661,8 @@ public sealed class IniSectionGenerator : IIncrementalGenerator
         sb.AppendLine("            {");
         foreach (var p in m.Properties)
         {
-            // [IgnoreDataMember] properties are not loaded from INI.
-            if (p.IsIgnored) continue;
+            // [IgnoreDataMember] and RuntimeOnly properties are not loaded from INI.
+            if (p.IsIgnored || p.IsRuntimeOnly) continue;
 
             string keyName = (p.KeyName ?? p.Name).ToLowerInvariant();
             string fieldName = $"_{Camel(p.Name)}";
@@ -690,8 +694,8 @@ public sealed class IniSectionGenerator : IIncrementalGenerator
         sb.AppendLine("            {");
         foreach (var p in m.Properties)
         {
-            // [IgnoreDataMember] properties are not known INI keys.
-            if (p.IsIgnored) continue;
+            // [IgnoreDataMember] and RuntimeOnly properties are not known INI keys.
+            if (p.IsIgnored || p.IsRuntimeOnly) continue;
 
             string keyName = (p.KeyName ?? p.Name).ToLowerInvariant();
             if (p.IsSubKeyDictionary)
@@ -709,8 +713,8 @@ public sealed class IniSectionGenerator : IIncrementalGenerator
         sb.AppendLine("        {");
         foreach (var p in m.Properties)
         {
-            // [IgnoreDataMember] and read-only properties are not serialized to the INI file.
-            if (p.IsIgnored || p.IsReadOnly) continue;
+            // [IgnoreDataMember], read-only, and RuntimeOnly properties are not serialized to the INI file.
+            if (p.IsIgnored || p.IsReadOnly || p.IsRuntimeOnly) continue;
             string fieldName = $"_{Camel(p.Name)}";
             string keyName = p.KeyName ?? p.Name;
             if (p.IsSubKeyDictionary)

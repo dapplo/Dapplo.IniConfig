@@ -393,3 +393,41 @@ public interface ICombinedValidationSettings : IIniSection, IDataValidation<ICom
             yield return "Host value 'banned' is not allowed.";
     }
 }
+
+// ── RuntimeOnly sample interface ──────────────────────────────────────────────
+
+/// <summary>
+/// Section that exercises <c>[IniValue(RuntimeOnly = true)]</c> properties.
+/// Runtime-only properties have a default, can be changed at runtime, but are never
+/// loaded from or saved to the INI file.
+/// </summary>
+[IniSection("RuntimeOnly")]
+public interface IRuntimeOnlySettings : IIniSection
+{
+    /// <summary>Regular read-write property — saved and loaded normally.</summary>
+    [IniValue(DefaultValue = "saved")]
+    string? Persisted { get; set; }
+
+    /// <summary>Runtime-only — has a default, never persisted.</summary>
+    [IniValue(DefaultValue = "runtime-default", RuntimeOnly = true)]
+    string? Session { get; set; }
+
+    /// <summary>Runtime-only integer with a default.</summary>
+    [IniValue(DefaultValue = "99", RuntimeOnly = true)]
+    int SessionCount { get; set; }
+}
+
+// ── Constants protection sample interface ────────────────────────────────────
+
+/// <summary>
+/// Section used to test constants-file protection.
+/// </summary>
+[IniSection("ConstantsTest")]
+public interface IConstantsSettings : IIniSection
+{
+    [IniValue(DefaultValue = "user-default")]
+    string? UserValue { get; set; }
+
+    [IniValue(DefaultValue = "admin-default")]
+    string? AdminValue { get; set; }
+}
