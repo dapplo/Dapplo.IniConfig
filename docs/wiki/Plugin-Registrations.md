@@ -25,19 +25,18 @@ var config = IniConfigRegistry.ForFile("app.ini")
 ```
 
 At this point:
-- `IniConfigRegistry.Get("app.ini")` already works — plugins can look up the config.
+- The `config` reference can be passed directly to plugins — no guessing of file names.
 - **No file has been read yet** — section properties still hold their compiled defaults.
 
 ### Phase 2 — plugins add their sections (no I/O)
 
-Each plugin's pre-initialization method retrieves the shared config and calls
-`AddSection<T>()`:
+The host **provides the `IniConfig`** to each plugin.  Each plugin calls
+`AddSection<T>()` on the config it receives:
 
 ```csharp
-// Inside a plugin pre-init method
-public void PreInit()
+// Inside a plugin pre-init method — config is provided by the host
+public void PreInit(IniConfig config)
 {
-    var config = IniConfigRegistry.Get("app.ini");
     config.AddSection<IPluginSettings>(new PluginSettingsImpl());
 }
 ```
@@ -75,9 +74,9 @@ var config = IniConfigRegistry.ForFile("app.ini")
     .RegisterSection<IHostSettings>(new HostSettingsImpl())
     .Create();
 
-// Phase 2: load plugins, each one registers its section
+// Phase 2: load plugins, pass the config so each plugin can register its section
 foreach (var plugin in PluginLoader.LoadAll())
-    plugin.PreInit();   // internally calls config.AddSection<IXxx>(...)
+    plugin.PreInit(config);
 
 // Phase 3: load (single file read for every section)
 config.Load();
@@ -92,12 +91,23 @@ var pluginSettings = config.GetSection<IPluginSettings>();
 
 public class PluginA
 {
-    public void PreInit()
+    public void PreInit(IniConfig config)
     {
-        // No builder reference needed — retrieve from the global registry
-        IniConfigRegistry.Get("app.ini").AddSection<IPluginASettings>(new PluginASettingsImpl());
+        // The host provides the config — no need to know or guess the file name
+        config.AddSection<IPluginASettings>(new PluginASettingsImpl());
     }
 }
+```
+
+### Alternative: registry-based lookup
+
+When passing `IniConfig` directly is impractical (e.g. a plugin that is initialised
+through a third-party plugin host), the plugin can retrieve the config from the global
+registry, provided the host has already called `Create()`:
+
+```csharp
+// Plugin retrieves the config from the registry when it cannot be injected
+IniConfigRegistry.Get("app.ini").AddSection<IPluginASettings>(new PluginASettingsImpl());
 ```
 
 Or use the `IniConfigRegistry` convenience overload:

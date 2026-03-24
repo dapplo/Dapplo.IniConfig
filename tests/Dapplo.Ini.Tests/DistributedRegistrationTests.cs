@@ -209,6 +209,36 @@ public sealed class DistributedRegistrationTests : IDisposable
         Assert.Contains("missing.ini", ex.Message);
     }
 
+    // ── Host provides config to plugin (preferred pattern) ────────────────────
+
+    [Fact]
+    public void HostProvidesConfig_PluginAddsSection_LoadsValues()
+    {
+        // Demonstrates the recommended plugin pattern:
+        // the host creates the config and passes it directly to the plugin,
+        // so the plugin never needs to know or guess the INI file name.
+        WriteIni("plugin.ini",
+            "[General]\nAppName = HostProvided\n" +
+            "[UserSettings]\nUsername = carol");
+
+        var hostSection = new GeneralSettingsImpl();
+
+        // Phase 1 — host creates the config
+        var config = IniConfigRegistry.ForFile("plugin.ini")
+            .AddSearchPath(_tempDir)
+            .RegisterSection<IGeneralSettings>(hostSection)
+            .Create();
+
+        // Phase 2 — host provides config to plugin; plugin calls AddSection
+        SimulatedPlugin.PreInit(config);
+
+        // Phase 3 — host loads everything at once
+        config.Load();
+
+        Assert.Equal("HostProvided", hostSection.AppName);
+        Assert.Equal("carol", config.GetSection<IUserSettings>().Username);
+    }
+
     // ── AddSection is accessible via GetSection after Load ──────────────────────
 
     [Fact]
@@ -305,5 +335,19 @@ public sealed class DistributedRegistrationTests : IDisposable
 
         Assert.Equal("BuiltApp", section.AppName);
         Assert.Equal(3, section.MaxRetries);
+    }
+}
+
+/// <summary>
+/// Simulates a plugin that receives an <see cref="IniConfig"/> from the host
+/// and registers its own section without knowing the INI file name.
+/// </summary>
+file static class SimulatedPlugin
+{
+    public static void PreInit(IniConfig config)
+    {
+        // The host provides the config — no file name guessing needed.
+        // The generic overload is preferred for AOT/trim safety.
+        config.AddSection<IUserSettings>(new UserSettingsImpl());
     }
 }
